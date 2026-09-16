@@ -1,5 +1,8 @@
 # codex-web
 
+Personal fork of [0xcaff/codex-web](https://github.com/0xcaff/codex-web).
+See [FORK.md](FORK.md) for maintained changes and the shared-daemon setup.
+
 a browser frontend for codex desktop, running on a machine you control.
 
 https://github.com/user-attachments/assets/0a33cbd8-741c-412c-9e75-46dfe9324596

@@ -1,0 +1,19 @@
+--- a/webview/assets/app-initial-236e1501144c.js
++++ b/webview/assets/app-initial-236e1501144c.js
+@@ -187741,12 +187741,10 @@
+       })));
+   });
+ function lk(e) {
+-  if (typeof window > `u`) return e === oE;
+-  let t =
+-    window.electronBridge?.getSharedObjectSnapshotValue?.(`host_config`) ??
+-    null;
+-  return t == null ? e === oE : t.id === e && t.kind === `local`;
+-}
++  // The shared daemon has no Desktop MCP process; use dynamic tools.
++  return false;
++}
++
+ var uk = t(() => {
+     uE();
+   }),

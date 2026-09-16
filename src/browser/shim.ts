@@ -599,3 +599,32 @@ export const webUtils = {
     return unimplemented("webUtils.getPathForFile");
   },
 };
+
+// Mobile navigation overlays the conversation instead of consuming its width.
+const mobileNavigationStyle = document.createElement("style");
+mobileNavigationStyle.textContent = `
+@media (max-width: 768px) {
+  .app-shell-left-panel { position: absolute !important; inset-block: 0; inset-inline-start: 0; z-index: 40; background: #fff !important; }
+  html.electron-dark .app-shell-left-panel { background: #181818 !important; }
+  body:has([data-app-shell-sidebar-trigger][aria-expanded="true"]) .app-shell-left-panel::after {
+    content: ""; position: absolute; top: 0; bottom: 0; left: 100%; width: 100vw;
+    background: rgba(0,0,0,.35); pointer-events: auto;
+  }
+}
+`;
+document.head.appendChild(mobileNavigationStyle);
+document.addEventListener("click", (event) => {
+  if (!mobileMediaQuery.matches || !(event.target instanceof Element)) return;
+  const panel = event.target.closest(".app-shell-left-panel");
+  if (panel && event.clientX > panel.getBoundingClientRect().right) {
+    event.preventDefault();
+    event.stopPropagation();
+    electronShim.closeSidebar?.();
+  }
+}, true);
+document.addEventListener("keydown", (event) => {
+  if (mobileMediaQuery.matches && event.key === "Escape") electronShim.closeSidebar?.();
+});
+mobileMediaQuery.addEventListener("change", (event) => {
+  if (event.matches) electronShim.closeSidebar?.();
+});
