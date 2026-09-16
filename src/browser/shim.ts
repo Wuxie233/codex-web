@@ -217,7 +217,7 @@ function flushOutboundQueue(): void {
     return;
   }
   for (const message of outboundQueue.splice(0)) {
-    socket.send(JSON.stringify(message));
+    socket.send(JSON.stringify({ ...message, bridgeSentAtMs: Date.now() }));
   }
 }
 

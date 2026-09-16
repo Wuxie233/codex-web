@@ -18,6 +18,7 @@ import fastifyMultipart from "@fastify/multipart";
 import fastifyStatic from "@fastify/static";
 import { installModuleAliasHook } from "./module";
 import { glob } from "glob";
+import { rebaseRequestDeadlines } from "./request-deadline";
 
 type ServerOptions = {
   host: string;
@@ -558,6 +559,7 @@ async function startIpcBridgeServer(options: ServerOptions): Promise<void> {
     });
 
     socket.on("message", async (rawData) => {
+      const receivedAtMs = Date.now();
       const window = await rendererReady;
       if (!window || socket.readyState !== WebSocket.OPEN) return;
       let message: RendererToMainMessage;
@@ -566,6 +568,14 @@ async function startIpcBridgeServer(options: ServerOptions): Promise<void> {
       } catch (error) {
         console.error("[ipc-bridge] invalid JSON payload", error);
         return;
+      }
+
+      if (message.type === "ipc-renderer-send" || message.type === "ipc-renderer-invoke") {
+        message.args = rebaseRequestDeadlines(
+          message.channel, message.args,
+          (message as unknown as { bridgeSentAtMs?: unknown }).bridgeSentAtMs,
+          receivedAtMs,
+        );
       }
 
       if (message.type === "ipc-renderer-send") {

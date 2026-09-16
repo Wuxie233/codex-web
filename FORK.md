@@ -33,3 +33,16 @@ An incomplete cloud catalog is not necessarily another local page. An authentica
 ## Local-only workspace
 
 ChatGPT cloud capabilities (including inherited project/chat/cloud-automation entry points) are disabled in this fork. The catalog service also ignores ChatGPT source activation from older clients. Local app-server population, authentication, model access, and local pagination remain unchanged. `patches/local-only-catalog.patch` is applied last; run `node --test tests/local-only-catalog.test.cjs` after extraction. The sync-failure machinery above remains available for local failures; disabling cloud access does not claim that its permissions were repaired.
+
+## Browser/server clock independence
+
+Desktop RPC deadlines assume a shared wall clock. The browser bridge stamps each
+outbound message at transmission; the server rebases `mcp-request` and
+`thread-prewarm-start` deadlines from the remaining browser budget onto its own
+clock. Browser queue time stays deducted and server queue expiry remains enabled.
+Network transit is not measured; older cached clients fall back to their bounded
+relative `timeoutMs`. No request is automatically replayed by this conversion.
+
+Regression checks: `npm run build:server` then
+`node --test tests/request-deadline.test.cjs`. Coverage includes both directions of
+clock skew, expired browser queues, timeout caps, and cached clients.
