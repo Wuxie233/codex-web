@@ -1,0 +1,129 @@
+--- a/webview/assets/app-initial-236e1501144c.js
++++ b/webview/assets/app-initial-236e1501144c.js
+@@ -413304,6 +413304,8 @@
+         #p;
+         #m = 0;
+         #h = !1;
++        #failedHosts = new Set();
++        #retryingSync = false;
+         constructor(e, t, n, r, i = `immediate`) {
+           ((this.appScope = e),
+             (this.service = t),
+@@ -413326,6 +413328,10 @@
+         }
+         dispose() {
+           ((this.#h = !0), this.#l.clear(), this.#e.clear());
++          if (typeof window !== "undefined" && window.__codexCatalogSyncNotice?.owner === this) {
++            window.__codexCatalogSyncNotice = null;
++            window.dispatchEvent(new Event("codex-catalog-sync-status"));
++          }
+         }
+         getPageState(e) {
+           let t = tAo(e).map((e) => this.#g(e)),
+@@ -413350,7 +413356,7 @@
+           let t = !1,
+             n = !1;
+           for (let [r, i] of e.hosts)
+-            ((t ||= !i.exhausted || !this.#s.has(r)),
++            ((t ||= !i.exhausted || (!this.#s.has(r) && !this.#failedHosts.has(r))),
+               (n ||= i.inFlight != null));
+           return t ? (n ? oAo : aAo) : iAo;
+         }
+@@ -413401,6 +413407,7 @@
+                   t.entries.length < t.desired &&
+                   t.nextCursor == null &&
+                   !this.#s.has(e) &&
++                  !this.#failedHosts.has(e) &&
+                   !this.#h;
+                 ) {
+                   let r = t.entries.length,
+@@ -413435,6 +413442,10 @@
+           let t = [],
+             n = new Set(this.#s);
+           this.#s.clear();
++          this.#failedHosts = new Set(
++            e.hosts.filter(r => r.syncFailed && this.hostIds.includes(r.hostId)).map(r => r.hostId),
++          );
++          this.#publishSyncNotice();
+           for (let r of e.hosts)
+             (r.isComplete &&
+               (this.#s.add(r.hostId),
+@@ -413444,6 +413455,34 @@
+               this.#c.set(r.hostId, r.revision));
+           (this.#O(), t.length > 0 && this.reconcileHosts(t));
+         }
++        #publishSyncNotice() {
++          if (this.#h || typeof window === "undefined") return;
++          window.__codexCatalogSyncNotice = {
++            owner: this,
++            failed: this.#failedHosts.size > 0,
++            cloudOnly: [...this.#failedHosts].every(id => id.startsWith("chatgpt:")),
++            retrying: this.#retryingSync,
++            retry: () => this.retryFailedSync(),
++          };
++          window.dispatchEvent(new Event("codex-catalog-sync-status"));
++        }
++        async retryFailedSync() {
++          if (this.#h || this.#retryingSync || !this.#failedHosts.size) return;
++          this.#retryingSync = true;
++          this.#publishSyncNotice();
++          const hosts = [...this.#failedHosts];
++          try {
++            const status = await this.service.requestSync(hosts, "immediate");
++            if (this.#h) return;
++            if (status != null) this.updateStatus(status);
++            await this.reconcileHosts(hosts);
++          } catch {
++            // Keep the failed state visible; a transport error is not an empty catalog.
++          } finally {
++            this.#retryingSync = false;
++            this.#publishSyncNotice();
++          }
++        }
+         async reconcileHosts(e = this.hostIds) {
+           for (let t of e) this.#l.add(t);
+           ((this.#d ??= Promise.resolve().then(async () => {
+--- a/webview/assets/app-primary-6b28e06666ff.js
++++ b/webview/assets/app-primary-6b28e06666ff.js
+@@ -319475,6 +319475,32 @@
+   war = t(() => {
+     ((Sar = X()), (Car = n(Q(), 1)), Wb());
+   });
++function CodexCatalogSyncNotice() {
++  const [state, setState] = Car.useState(() => window.__codexCatalogSyncNotice);
++  Car.useEffect(() => {
++    const update = () => setState(window.__codexCatalogSyncNotice);
++    window.addEventListener("codex-catalog-sync-status", update);
++    update();
++    return () => window.removeEventListener("codex-catalog-sync-status", update);
++  }, []);
++  if (!state?.failed) return null;
++  const zh = (document.documentElement.lang || navigator.language).startsWith("zh");
++  return P4.jsxs("div", {
++    "data-codex-catalog-sync-error": "true",
++    role: "status",
++    style: { flexShrink: 0, padding: "8px 12px", fontSize: 12, lineHeight: "18px", borderBottom: "1px solid rgba(128,128,128,.25)" },
++    children: [
++      P4.jsx("span", { children: zh
++        ? (state.cloudOnly ? "云端会话同步失败，本地会话仍可使用。" : "部分会话同步失败，已加载会话仍可使用。")
++        : (state.cloudOnly ? "Cloud sessions could not sync. Local sessions remain available." : "Some sessions could not sync. Loaded sessions remain available.") }),
++      P4.jsx("button", {
++        type: "button", disabled: state.retrying, onClick: state.retry,
++        style: { textDecoration: "underline", marginLeft: 6 },
++        children: state.retrying ? (zh ? "重试中…" : "Retrying…") : (zh ? "重试同步" : "Retry sync"),
++      }),
++    ],
++  });
++}
+ function Tar(e) {
+   let t = (0, Dar.c)(8),
+     { desktopNavItemsEnabled: n } = e,
+@@ -319507,7 +319533,7 @@
+           id: `app-shell-sidebar`,
+           className: l,
+           ...c,
+-          children: [null, u],
++          children: [(0, P4.jsx)(CodexCatalogSyncNotice, {}), u],
+         })),
+         (t[4] = c),
+         (t[5] = l),

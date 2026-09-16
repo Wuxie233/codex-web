@@ -1,0 +1,64 @@
+--- a/.vite/build/main-C5K7o1Hr.js
++++ b/.vite/build/main-C5K7o1Hr.js
+@@ -132042,7 +132042,7 @@
+         )));
+     }
+     readSyncState() {
+-      return this.syncState;
++      return { ...this.syncState, syncFailed: this.lastFailureAt != null };
+     }
+     get isSyncExecuting() {
+       return this.inFlightExecution != null;
+@@ -132289,6 +132289,7 @@
+         this.threadObservationListeners.clear());
+     }
+     async runSync(e, t) {
++      const hadSyncFailure = this.lastFailureAt != null;
+       let n = this.store.readSyncState(),
+         r = this.options.resumeOffsetPagination
+           ? this.store.readScanCheckpoint()
+@@ -132463,7 +132464,8 @@
+               this.hasPendingNotificationSync() &&
+                 this.armNotificationSyncTimer(0),
+               this.recordSilentMutation(),
+-              (x ||
++              (hadSyncFailure ||
++                x ||
+                 this.syncState.catalogRevision !== S ||
+                 this.syncState.isComplete !== C) &&
+                 this.publishInvalidation(),
+@@ -132477,7 +132479,7 @@
+               this.store.abortScan(a),
+               (y = !1),
+               (this.lastFailureAt = this.now()),
+-              x && this.publishInvalidation(),
++              this.publishInvalidation(),
+               `failed`
+             );
+           (s.add(M),
+@@ -132491,7 +132493,7 @@
+           this.isCurrent(e)
+             ? (this.options.onError?.(t),
+               (this.lastFailureAt = this.now()),
+-              x && this.publishInvalidation(),
++              this.publishInvalidation(),
+               `failed`)
+             : `aborted`
+         );
+@@ -133022,6 +133024,7 @@
+           (t.push({
+             hostId: i,
+             isComplete: a.isComplete,
++            syncFailed: a.syncFailed === true,
+             revision: e?.revision ?? a.catalogRevision,
+           }),
+             (n = Math.max(n, a.catalogRevision)));
+@@ -133029,7 +133032,7 @@
+       for (let [e, r] of this.hosts) {
+         if (r.ownerCount === 0 || t.some((t) => t.hostId === e)) continue;
+         let i = r.coordinator.readSyncState();
+-        (t.push({ hostId: e, isComplete: i.isComplete, revision: r.revision }),
++        (t.push({ hostId: e, isComplete: i.isComplete, syncFailed: i.syncFailed === true, revision: r.revision }),
+           (n = Math.max(n, i.catalogRevision)));
+       }
+       return (
