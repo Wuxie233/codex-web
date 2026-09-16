@@ -6,6 +6,7 @@ Upstream: https://github.com/0xcaff/codex-web, baseline `0dfdc10768c724d9a6ba507
 
 - Mobile sidebar overlays the conversation instead of shrinking it. Outside taps and Escape close it. Light and dark themes have opaque backgrounds.
 - Disable Desktop MCP capability injection: a shared app-server does not run the Desktop MCP process. The frontend uses its dynamic-tools path instead, avoiding a partial `mcp_servers.codex_app` configuration with no transport.
+- Sidebar pagination shows a button while idle and a spinner only during a request. Automatic loading runs once per visible row count; a no-progress page requires a manual retry. New rows rearm automatic pagination.
 - Keep generated server files and local runtime state out of Git.
 
 ## Shared daemon
@@ -21,3 +22,9 @@ The Web service owns connections only. Do not restart or replace the shared daem
 Verify mobile sidebar opening/closing in both themes, existing thread history, shared-daemon connectivity and authentication after changes. Browser checks do not replace real Android keyboard, attachment, or reconnect tests. The separately deployed Android shell is not included in this repository.
 
 Only wrapper source and small patches are maintained here; extracted Desktop bundles, credentials, runtime data and signing material are not committed.
+
+## Pagination regression check
+
+After extracting and patching the pinned Desktop bundle, run `node --test tests/sidebar-pagination.test.cjs`. The tests exercise its actual pagination component and check both call sites. If the bundle changes, missing anchors intentionally fail and require review.
+
+An incomplete cloud catalog is not necessarily another local page. An authenticated cloud fetch can fail (for example with HTTP 403) after the local catalog is complete. This fork does not pretend such a cloud catalog is complete or fix account access; it prevents no-progress sidebar auto-fetch loops and leaves manual retry available.

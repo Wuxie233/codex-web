@@ -1,0 +1,81 @@
+--- a/webview/assets/app-primary-6b28e06666ff.js
++++ b/webview/assets/app-primary-6b28e06666ff.js
+@@ -52576,6 +52576,7 @@
+       rootMargin: a,
+     } = e,
+     o = (0, fL.useRef)(null),
++    attempted = (0, fL.useRef)(false),
+     s;
+   t[0] !== n || t[1] !== r || t[2] !== i
+     ? ((s = () => {
+@@ -52591,14 +52592,17 @@
+   t[4] !== n || t[5] !== r || t[6] !== c || t[7] !== a
+     ? ((l = () => {
+         let e = o.current;
+-        if (e == null || !n || r) return;
++        if (e == null || !n || r || attempted.current) return;
+         if (typeof IntersectionObserver > `u`) {
++          attempted.current = true;
+           c();
+           return;
+         }
+         let t = new IntersectionObserver(
+           (e) => {
+-            e.some(XTt) && (t.disconnect(), c());
++            e.some(XTt) &&
++              (t.disconnect(),
++              attempted.current || ((attempted.current = true), c()));
+           },
+           { rootMargin: a },
+         );
+@@ -52624,26 +52628,30 @@
+     !n && !r)
+   )
+     return null;
+-  let d;
+-  t[13] === Symbol.for(`react.memo_cache_sentinel`)
+-    ? ((d = (0, pL.jsx)(`div`, {
+-        ref: o,
+-        className: `flex w-full justify-center py-3`,
+-        children: (0, pL.jsx)(Ym, { className: `icon-xs text-secondary` }),
+-      })),
+-      (t[13] = d))
+-    : (d = t[13]);
+-  let f = d,
+-    p;
+-  return (
+-    t[14] === Symbol.for(`react.memo_cache_sentinel`)
+-      ? ((p = (0, pL.jsxs)(pL.Fragment, {
+-          children: [null, (0, pL.jsx)(pL.Fragment, { children: f })],
+-        })),
+-        (t[14] = p))
+-      : (p = t[14]),
+-    p
+-  );
++  // Auto-load only once per mounted page. Call sites key this component by
++  // visible item count, so new rows rearm it; failed/no-progress pages need
++  // an explicit retry instead of an IntersectionObserver request loop.
++  // More data is available while idle; only an active request is loading.
++  // Keep the observation target and offer a keyboard/touch fallback.
++  return (0, pL.jsx)(`div`, {
++    ref: o,
++    className: `flex w-full justify-center py-3`,
++    "aria-busy": r,
++    children: r
++      ? (0, pL.jsx)(Ym, { className: `icon-xs text-secondary` })
++      : (0, pL.jsx)(`button`, {
++          type: `button`,
++          className: `text-secondary hover:text-default text-sm`,
++          onClick: () => {
++            n && !r && ((attempted.current = true), i());
++          },
++          children: (0, pL.jsx)(Y, {
++            id: `sidebarElectron.showMore`,
++            defaultMessage: `Show more`,
++            description: `Button label for expanding a task list in the sidebar`,
++          }),
++        }),
++  });
+ }
+ function XTt(e) {
+   return e.isIntersecting;
