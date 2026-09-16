@@ -1,0 +1,23 @@
+--- a/webview/assets/app-initial-236e1501144c.js
++++ b/webview/assets/app-initial-236e1501144c.js
+@@ -347909,6 +347909,9 @@
+         Q,
+         (e, { get: t }) => {
+           let n = FTa[e.name];
++          // This fork exposes local Codex work, not ChatGPT cloud features.
++          if (n.accessPolicies.includes(`chatgpt`))
++            return { isLoading: !1, isError: !1, isCapable: !1 };
+           if (!NTa(n)) return { isLoading: !1, isError: !1, isCapable: !1 };
+           let r = [
+             ...n.accessPolicies.map((e) => t(CTa[e])),
+--- a/.vite/build/main-C5K7o1Hr.js
++++ b/.vite/build/main-C5K7o1Hr.js
+@@ -102057,6 +102057,8 @@
+         (this.onStatus = null));
+     }
+     async setSourceEnabled(e, t) {
++      // Also reject cloud activation from clients with cached frontend assets.
++      if (e.kind === `chatgpt`) return;
+       if (e.kind === `app-server`) {
+         if (t === (this.populationLease != null)) return;
+         (this.populationLease?.dispose(),

@@ -29,3 +29,7 @@ Only wrapper source and small patches are maintained here; extracted Desktop bun
 After extracting and patching the pinned Desktop bundle, run `node --test tests/sidebar-pagination.test.cjs tests/catalog-sync-state.test.cjs tests/catalog-page-state.test.cjs`. The tests exercise its actual pagination component and check both call sites. If the bundle changes, missing anchors intentionally fail and require review.
 
 An incomplete cloud catalog is not necessarily another local page. An authenticated cloud fetch can fail (for example with HTTP 403) after the local catalog is complete. This fork does not pretend such a cloud catalog is complete or fix account access; it separates pagination from sync failure and offers a dedicated sync retry. The upstream five-minute cloud failure backoff remains in effect; an acknowledged retry does not mean synchronization succeeded. Failure stays visible until the server reports recovery.
+
+## Local-only workspace
+
+ChatGPT cloud capabilities (including inherited project/chat/cloud-automation entry points) are disabled in this fork. The catalog service also ignores ChatGPT source activation from older clients. Local app-server population, authentication, model access, and local pagination remain unchanged. `patches/local-only-catalog.patch` is applied last; run `node --test tests/local-only-catalog.test.cjs` after extraction. The sync-failure machinery above remains available for local failures; disabling cloud access does not claim that its permissions were repaired.
