@@ -634,9 +634,22 @@ window.addEventListener("pageshow", updateBrowserViewport);
 // Mobile navigation overlays the conversation instead of consuming its width.
 const mobileNavigationStyle = document.createElement("style");
 mobileNavigationStyle.textContent = `
+.codex-web-close-sidebar { display: none; }
 @media (max-width: 768px) {
   .app-shell-left-panel { position: absolute !important; inset-block: 0; inset-inline-start: 0; z-index: 40; background: #fff !important; }
   html.electron-dark .app-shell-left-panel { background: #181818 !important; }
+  body:not(:has([data-app-shell-sidebar-trigger][aria-expanded="true"])) .app-shell-left-panel,
+  body:not(:has([data-app-shell-sidebar-trigger][aria-expanded="true"])) .app-shell-left-panel * {
+    visibility: hidden !important; pointer-events: none !important;
+  }
+  body:has([data-app-shell-sidebar-trigger][aria-expanded="true"]) .codex-web-close-sidebar {
+    display: grid; place-items: center; position: fixed; top: 8px; right: 8px;
+    width: 44px; height: 44px; z-index: 100; border: 1px solid #888;
+    border-radius: 12px; background: #fff; color: #181818; font: 28px/1 sans-serif;
+    cursor: pointer; touch-action: manipulation;
+  }
+  html.electron-dark .codex-web-close-sidebar { background: #242424 !important; color: #fff !important; }
+
   body:has([data-app-shell-sidebar-trigger][aria-expanded="true"]) .app-shell-left-panel::after {
     content: ""; position: absolute; top: 0; bottom: 0; left: 100%; width: 100vw;
     background: rgba(0,0,0,.35); pointer-events: auto;
@@ -644,6 +657,19 @@ mobileNavigationStyle.textContent = `
 }
 `;
 document.head.appendChild(mobileNavigationStyle);
+const sidebarCloseButton = document.createElement("button");
+sidebarCloseButton.type = "button";
+sidebarCloseButton.className = "codex-web-close-sidebar";
+sidebarCloseButton.textContent = "×";
+sidebarCloseButton.setAttribute("aria-label", navigator.language.startsWith("zh") ? "关闭侧边栏" : "Close sidebar");
+sidebarCloseButton.addEventListener("click", () => {
+  electronShim.closeSidebar?.();
+  document.querySelector<HTMLElement>("[data-app-shell-sidebar-trigger]")?.focus();
+});
+const mountSidebarCloseButton = () => document.body.appendChild(sidebarCloseButton);
+if (document.body) mountSidebarCloseButton();
+else document.addEventListener("DOMContentLoaded", mountSidebarCloseButton, { once: true });
+
 document.addEventListener("click", (event) => {
   if (!mobileMediaQuery.matches || !(event.target instanceof Element)) return;
   const panel = event.target.closest(".app-shell-left-panel");

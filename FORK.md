@@ -60,3 +60,17 @@ Browser regression: run `node tests/browser/viewport.cjs` against a local server
 Optional `PLAYWRIGHT_MODULE`, `CHROMIUM_PATH`, and `TEST_BASE_URL` select the test
 installation and target. It simulates differing layout/visual viewport heights,
 tablet/phone widths, CSS zoom and pinch zoom; it is not a physical Android test.
+
+## Mobile sidebar hit testing
+
+The mobile overlay must hide its entire subtree when the sidebar trigger reports
+`aria-expanded=false`. Desktop route navigation may retain transparent sidebar
+children; absolute positioning otherwise leaves the account button over the
+composer's attachment button. Closed mobile panels now have hidden visibility
+and disabled pointer events. A 44px close button stays at the viewport's upper
+right while the drawer is open; desktop layout is unchanged.
+
+`tests/browser/sidebar-touch.cjs` checks touch hit testing after navigating to an
+existing thread, the actual attachment menu, close control, backdrop, and desktop
+breakpoint. Set `TEST_THREAD_TITLE` to an existing thread title; it sends no turns.
+It uses the same browser tool environment variables as the viewport test.
