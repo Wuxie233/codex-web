@@ -600,6 +600,37 @@ export const webUtils = {
   },
 };
 
+// The Desktop shell uses inline 100vh, which can extend behind browser chrome
+// or the keyboard. Keep its existing CSS zoom, but size it to the visible area.
+const browserViewportStyle = document.createElement("style");
+browserViewportStyle.textContent = `
+#root > .relative.flex.flex-col {
+  height: calc(var(--codex-web-visible-height, 100dvh) / var(--codex-window-zoom, 1)) !important;
+}
+`;
+document.head.appendChild(browserViewportStyle);
+const updateBrowserViewport = () => {
+  const viewport = window.visualViewport;
+  // Pinch zoom should magnify/pan the page, not reflow the entire application.
+  if (viewport && Math.abs(viewport.scale - 1) > 0.01) return;
+  const height = viewport?.height ?? window.innerHeight;
+  if (Number.isFinite(height) && height > 0) {
+    document.documentElement.style.setProperty("--codex-web-visible-height", `${height}px`);
+    requestAnimationFrame(() => {
+      const editor = document.activeElement;
+      if (!(editor instanceof HTMLElement) || !editor.isContentEditable) return;
+      const composer = editor.closest<HTMLElement>('[class*="_ComposerLayoutRoot_"]') ?? editor;
+      if (composer.getBoundingClientRect().bottom > height) {
+        composer.scrollIntoView({ block: "nearest", inline: "nearest" });
+      }
+    });
+  }
+};
+updateBrowserViewport();
+window.visualViewport?.addEventListener("resize", updateBrowserViewport);
+window.addEventListener("resize", updateBrowserViewport);
+window.addEventListener("pageshow", updateBrowserViewport);
+
 // Mobile navigation overlays the conversation instead of consuming its width.
 const mobileNavigationStyle = document.createElement("style");
 mobileNavigationStyle.textContent = `

@@ -46,3 +46,17 @@ relative `timeoutMs`. No request is automatically replayed by this conversion.
 Regression checks: `npm run build:server` then
 `node --test tests/request-deadline.test.cjs`. Coverage includes both directions of
 clock skew, expired browser queues, timeout caps, and cached clients.
+
+## Browser viewport height
+
+The Desktop shell has an inline `100vh` height. The browser shim overrides only
+that shell with the Visual Viewport height (falling back to `100dvh`/innerHeight),
+preserving Desktop CSS zoom. Browser chrome and keyboard resize events update
+its height; pinch zoom keeps the existing layout so magnification still works.
+When a focused composer overflows the home page's scrollable content, it is
+scrolled into view, including its footer controls.
+
+Browser regression: run `node tests/browser/viewport.cjs` against a local server.
+Optional `PLAYWRIGHT_MODULE`, `CHROMIUM_PATH`, and `TEST_BASE_URL` select the test
+installation and target. It simulates differing layout/visual viewport heights,
+tablet/phone widths, CSS zoom and pinch zoom; it is not a physical Android test.
