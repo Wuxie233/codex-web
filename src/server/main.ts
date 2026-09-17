@@ -459,7 +459,11 @@ async function startIpcBridgeServer(options: ServerOptions): Promise<void> {
   });
 
   await app.register(fastifyStatic, {
-    root: path.resolve(__dirname, "../../scratch/asar/webview"),
+    root: [
+      path.resolve(__dirname, "../../scratch/webview-delivery"),
+      path.resolve(__dirname, "../../scratch/asar/webview"),
+    ],
+    preCompressed: true,
     prefix: "/",
   });
 

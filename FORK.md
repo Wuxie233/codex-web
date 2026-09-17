@@ -99,3 +99,25 @@ refer to loaded entries, not a complete server-wide inventory.
 Checks: `node --test tests/workspace-directory-groups.test.cjs` and
 `node tests/browser/workspace-groups.cjs` (the same Playwright environment as
 other browser checks).
+
+### Startup asset delivery
+
+`build:browser` also prepares `scratch/webview-delivery` from the patched source.
+The HTTP server prefers this overlay and falls back to the original webview for
+other assets. The two main modules are compacted without renaming variables or
+rewriting expressions; legal notices are retained. The overlay HTML preloads the
+primary module so its download can overlap initial startup.
+
+Every overlay file has matching identity, gzip and Brotli representations.
+This matters with the static server's multiple-root fallback: a missing preferred
+encoding can otherwise select the original asset. Unchanged builds retain file
+mtimes and validators. Keep cache revalidation: upstream-looking filenames do
+not change when this fork patches their contents, so immutable caching is unsafe.
+Always rebuild browser delivery after changing patched webview files.
+
+Validation: `node --test tests/delivery-module.test.cjs`, then with the server
+running `node tests/browser/delivery-headers.cjs` and the existing sidebar tests.
+For browser timing, Playwright `httpCredentials` disables cache through request
+interception. Its repeated navigations are not warm-cache measurements; remove
+that hook after browser authentication and explicitly enable cache for a warm
+comparison. Preserve a separate cold-load comparison.
