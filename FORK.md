@@ -74,3 +74,13 @@ right while the drawer is open; desktop layout is unchanged.
 existing thread, the actual attachment menu, close control, backdrop, and desktop
 breakpoint. Set `TEST_THREAD_TITLE` to an existing thread title; it sends no turns.
 It uses the same browser tool environment variables as the viewport test.
+
+## Deliberate archive actions on touch screens
+
+`src/browser/mobile-sidebar-actions.ts` makes the mobile sidebar's English and
+Chinese archive controls visible, reserves row space, and uses 44px targets.
+Its CSS uses the existing theme layer to override Desktop's important utility
+sizes. A DOM dialog gates the original click; Cancel/Escape never replay it,
+and confirmation replays it once only if the original button is still mounted.
+Desktop behavior is unchanged. `tests/browser/archive-touch.cjs` verifies target
+visibility/size and cancellation against existing rows without archiving them.

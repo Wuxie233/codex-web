@@ -1,3 +1,4 @@
+import "./mobile-sidebar-actions";
 import {
   mapBrowserPathToInitialRoute,
   mapMemoryPathToBrowserPath,
