@@ -609,6 +609,14 @@ ensureSocket();
 
 export const contextBridge = {
   exposeInMainWorld(_key: string, _api: unknown): void {
+    if (_key === "electronBridge" && isRecord(_api)) {
+      // No native window exists for Menu.popup on the web host. Omitting this
+      // capability lets Desktop render its existing accessible browser menus.
+      const browserApi = { ..._api };
+      delete browserApi.showContextMenu;
+      Reflect.set(window, _key, browserApi);
+      return;
+    }
     Reflect.set(window, _key, _api);
   },
 };

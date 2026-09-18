@@ -89,7 +89,13 @@ visibility/size and cancellation against existing rows without archiving them.
 
 The sidebar uses Desktop's native project tree and recent-chat list. Thread
 working directories do not create synthetic workspace groups. On narrow screens,
-the project creation control stays visible and has a 44px touch target.
+the project creation and per-project menu controls stay visible and have 44px
+touch targets. The project's hover-only action containers must also expand on
+touch screens so their buttons are not clipped out of the row.
+
+The browser bridge omits `showContextMenu`: the headless Electron shim cannot
+display a native `Menu.popup`. Desktop therefore uses its existing accessible
+web menus, preserving item callbacks and keyboard dismissal.
 
 The browser shim handles both the legacy add-root message and
 `electron-pick-workspace-root-option` with the host directory picker. Picking a
@@ -98,7 +104,8 @@ it does not create or select a project. Cancel emits nothing. Additional folders
 can be added by opening the picker again. Project creation remains with Desktop,
 including its default working directory when the sources list is empty.
 
-Checks: `node tests/browser/project-sources.cjs` with the same Playwright
+Checks: `node tests/browser/project-sources.cjs` and
+`node tests/browser/project-actions.cjs` with the same Playwright
 environment as other browser checks.
 
 ### Startup asset delivery
