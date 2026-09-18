@@ -73,12 +73,13 @@ function WorkspaceRootDialog({
     function handleKeyDown(event: KeyboardEvent): void {
       if (event.key === "Escape") {
         event.preventDefault();
+        event.stopImmediatePropagation();
         onClose(null);
       }
     }
 
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
+    window.addEventListener("keydown", handleKeyDown, true);
+    return () => window.removeEventListener("keydown", handleKeyDown, true);
   }, [onClose]);
 
   const selectedPath = userSelectedPath ?? directoryQuery.data?.directoryPath;
@@ -186,10 +187,10 @@ function WorkspaceRootDialog({
                     ].join(" ")}
                     id={TITLE_ID}
                   >
-                    Add remote project
+                    Select project folder
                   </div>
                   <div className={["sr-only"].join(" ")} id={DESCRIPTION_ID}>
-                    Choose a folder on the Codex Web host to add as a project.
+                    Choose a folder on the Codex Web host.
                   </div>
                 </div>
               </div>
@@ -482,7 +483,7 @@ function WorkspaceRootDialog({
                   disabled={!selectedPath || isBusy}
                   type="submit"
                 >
-                  Add project
+                  Select folder
                 </button>
               </div>
             </div>

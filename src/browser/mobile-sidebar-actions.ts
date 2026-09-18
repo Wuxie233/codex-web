@@ -5,6 +5,8 @@ const style = document.createElement('style');
 style.textContent = `
 @layer theme {
 @media (max-width: 768px) {
+  .app-shell-left-panel .pointer-events-none:has([data-app-action-sidebar-project-create]) { opacity: 1 !important; pointer-events: auto !important; }
+  .app-shell-left-panel [data-app-action-sidebar-project-create] { width: 44px !important; height: 44px !important; }
   .app-shell-left-panel .sidebar-item:has(${archiveSelector}) { min-height: 64px; padding-inline-end: 90px !important; }
   .app-shell-left-panel .sidebar-item .absolute:has(${archiveSelector}) { z-index: 20 !important; opacity: 1 !important; width: 84px !important; align-items: center !important; padding-top: 0 !important; }
   .app-shell-left-panel ${archiveSelector} { opacity: 1 !important; pointer-events: auto; width: 44px !important; height: 44px !important; color: inherit !important; border: 1px solid #888 !important; border-radius: 8px !important; background: var(--color-surface, #242424) !important; }

@@ -52,5 +52,3 @@ patch --batch --forward --strip 1 --directory scratch/asar < patches/main-catalo
 patch --batch --forward --strip 1 --directory scratch/asar < patches/webview-catalog-sync-state.patch
 
 patch --batch --forward --strip 1 --directory scratch/asar < patches/local-only-catalog.patch
-
-patch --batch --forward --strip 1 --directory scratch/asar < patches/workspace-directory-groups.patch

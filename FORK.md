@@ -85,20 +85,21 @@ and confirmation replays it once only if the original button is still mounted.
 Desktop behavior is unchanged. `tests/browser/archive-touch.cjs` verifies target
 visibility/size and cancellation against existing rows without archiving them.
 
-### Directory workspace view
+### Native projects and folder selection
 
-`patches/workspace-directory-groups.patch` groups the main chat list by the
-exact host and working directory from the existing reactive thread metadata.
-The workspace selector filters the loaded list; it does not register projects,
-change thread ownership, or change the directory of a new chat. Pinned chats and
-registered project lists retain their existing behavior. Missing metadata stays
-visible under Other chats and joins its directory when metadata arrives.
-Original rows, navigation, wrappers and pagination remain in use. Group counts
-refer to loaded entries, not a complete server-wide inventory.
+The sidebar uses Desktop's native project tree and recent-chat list. Thread
+working directories do not create synthetic workspace groups. On narrow screens,
+the project creation control stays visible and has a 44px touch target.
 
-Checks: `node --test tests/workspace-directory-groups.test.cjs` and
-`node tests/browser/workspace-groups.cjs` (the same Playwright environment as
-other browser checks).
+The browser shim handles both the legacy add-root message and
+`electron-pick-workspace-root-option` with the host directory picker. Picking a
+source emits `workspace-root-option-picked` back to the current project form;
+it does not create or select a project. Cancel emits nothing. Additional folders
+can be added by opening the picker again. Project creation remains with Desktop,
+including its default working directory when the sources list is empty.
+
+Checks: `node tests/browser/project-sources.cjs` with the same Playwright
+environment as other browser checks.
 
 ### Startup asset delivery
 
