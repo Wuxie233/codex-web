@@ -1,0 +1,34 @@
+--- a/webview/assets/app-initial-236e1501144c.js
++++ b/webview/assets/app-initial-236e1501144c.js
+@@ -133997,6 +133997,7 @@
+           (t = this._flushCoordinator) == null || t.checkQuickFlush());
+       }
+       incrementNonExposureCount(e) {
++        if (this._loggingEnabled === `disabled`) return;
+         let t = this._nonExposedChecks[e] ?? 0;
+         this._nonExposedChecks[e] = t + 1;
+       }
+@@ -134004,6 +134005,7 @@
+         (this.flush().catch(() => {}), (this._lastExposureTimeMap = {}));
+       }
+       start() {
++        if (this._loggingEnabled === `disabled`) return;
+         let t = (0, u._isServerEnv)();
+         if (t && this._options?.loggingEnabled !== `always`) return;
+         let n = this._initFlushCoordinator();
+@@ -134049,6 +134051,7 @@
+         this._flushCoordinator && this._flushCoordinator.addEvent(t);
+       }
+       _shouldLogEvent(e) {
++        if (this._loggingEnabled === `disabled`) return !1;
+         if (this._options?.loggingEnabled !== `always` && (0, u._isServerEnv)())
+           return !1;
+         if (!(0, d._isExposureEvent)(e)) return !0;
+@@ -426787,6 +426790,7 @@
+       (fWo = 5),
+       (pWo = 500),
+       (mWo = {
++        loggingEnabled: `disabled`,
+         overrideAdapter: window.__ELECTRON_SHIM__.overrideAdapter,
+         enableLiveValuesAutoRefresh: !0,
+         networkConfig: {

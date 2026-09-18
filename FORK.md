@@ -154,3 +154,18 @@ keep their original behavior. This does not change durable or legacy history.
 
 `node --test tests/thread-history-pagination.test.cjs` exercises the patched
 bundle pagination against long and short histories, including cursor continuation.
+
+### Browser event telemetry
+
+`patches/webview-disable-event-telemetry.patch` disables Statsig event logging
+in the Web client. Event registration requests can receive an upstream HTTP 403
+challenge page, causing repeated networking and batch-flush errors. Configuration
+fetches, live-value refresh and the override adapter remain enabled.
+
+The bundled SDK otherwise stores events while logging is disabled and starts a
+coordinator that can retry previously saved batches. The patch makes disabled
+logging skip event collection, non-exposure counts and logger startup as well.
+Existing saved events are left untouched but are not replayed while disabled.
+This does not suppress console errors or alter chat, model or authentication
+requests. Run `node --test tests/statsig-telemetry.test.cjs` and rebuild browser
+assets after applying the patch so the compressed delivery overlay is updated.
