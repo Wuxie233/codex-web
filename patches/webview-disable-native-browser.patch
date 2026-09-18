@@ -1,0 +1,12 @@
+--- a/webview/assets/app-initial-236e1501144c.js
++++ b/webview/assets/app-initial-236e1501144c.js
+@@ -347915,6 +347915,9 @@
+         Q,
+         (e, { get: t }) => {
+           let n = FTa[e.name];
++          // Native browser surfaces are not implemented by the Web bridge.
++          if (e.name === `browser.in-app`)
++            return { isLoading: !1, isError: !1, isCapable: !1 };
+           // This fork exposes local Codex work, not ChatGPT cloud features.
+           if (n.accessPolicies.includes(`chatgpt`))
+             return { isLoading: !1, isError: !1, isCapable: !1 };

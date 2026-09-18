@@ -169,3 +169,23 @@ Existing saved events are left untouched but are not replayed while disabled.
 This does not suppress console errors or alter chat, model or authentication
 requests. Run `node --test tests/statsig-telemetry.test.cjs` and rebuild browser
 assets after applying the patch so the compressed delivery overlay is updated.
+
+### Native browser capability
+
+The Web bridge does not implement Electron's native browser surface. Advertising
+`browser.in-app` lets users open an empty pane and causes native window geometry
+requests to fail. `patches/webview-disable-native-browser.patch` resolves that
+capability as unavailable before consulting Desktop policy or daemon config.
+Desktop's existing availability checks then hide the launcher, skip saved native
+browser tabs, and disable its native browser agent UI. Other capabilities and the
+daemon configuration are unchanged; ordinary web URLs use the external browser
+path. This does not add embedded browsing or local HTML preview support.
+
+Keep the capability tree intact: an empty `supportedClients` list is rejected
+during registration. Run `node --test tests/browser-capability.test.cjs` and
+`npm run build:browser` after applying the patch to update compressed delivery.
+For the UI check, set `TEST_THREAD_NAME` to an existing chat title and run
+`node tests/browser/native-browser-disabled.cjs` with the browser environment
+variables above. It checks the launcher and an external-link popup through the
+real preload bridge, using a synthetic destination response; it does not test
+third-party website availability.
