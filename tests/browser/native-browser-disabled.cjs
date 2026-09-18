@@ -25,6 +25,14 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || "playwright");
     });
     const page = await context.newPage();
     const errors = [];
+    const forwardedLinks = [];
+    page.on("websocket", (socket) => {
+      socket.on("framesent", ({ payload }) => {
+        const message = JSON.parse(String(payload));
+        if (message.args?.[0]?.type === "open-in-browser")
+          forwardedLinks.push(message.args[0]);
+      });
+    });
     page.on("pageerror", (e) => errors.push(e.message));
     await page.goto(process.env.TEST_BASE_URL || "http://127.0.0.1:8214/", {
       waitUntil: "domcontentloaded",
@@ -77,6 +85,8 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || "playwright");
       button.onclick = () =>
         window.electronBridge.sendMessageFromView({
           type: "open-in-browser",
+          initiator: "markdown_link_click",
+          openTargetIntent: "default",
           url: "https://example.com/",
         });
       document.body.append(button);
@@ -94,11 +104,17 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || "playwright");
       0,
     );
     assert.deepEqual(errors, []);
+    assert.equal(forwardedLinks.length, 0, "web links must not enter native routing");
+    await popup.close();
+    await page.bringToFront();
+    await sidePanel.click();
+    await page.getByRole("button", { name: /^(终端|Terminal)/ }).waitFor();
+    await sidePanel.click();
     await page.evaluate(() =>
       document.querySelector("#external-browser-test").remove(),
     );
     console.log(
-      "PASS: native launcher absent, no restored native surface, external tab opens once, no page errors",
+      "PASS: native launcher absent, no restored native surface, external tab opens once without native IPC, original UI remains interactive, no page errors",
     );
   } finally {
     await browser.close();

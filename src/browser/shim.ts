@@ -444,6 +444,9 @@ export const ipcRenderer = {
     if (channel === "codex_desktop:message-from-view" && args.length === 1) {
       if (isOpenInBrowserMessage(args[0])) {
         window.open(args[0].url, "_blank", "noopener,noreferrer");
+        // The client owns web links; forwarding them also invokes Desktop's
+        // unsupported native browser routing, even when its UI is disabled.
+        if (/^https?:\/\//i.test(args[0].url)) return Promise.resolve();
       }
 
       if (isLocalFilePickerMessage(args[0])) {

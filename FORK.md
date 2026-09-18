@@ -189,3 +189,10 @@ For the UI check, set `TEST_THREAD_NAME` to an existing chat title and run
 variables above. It checks the launcher and an external-link popup through the
 real preload bridge, using a synthetic destination response; it does not test
 third-party website availability.
+
+The preload shim consumes HTTP(S) `open-in-browser` messages after opening the
+client tab. They must not fall through to `invokeMain`: Desktop's independent
+main-process feature flags can still route them into native browser surfaces or
+link-destination prompts. Non-web protocol dispatch keeps its existing behavior.
+The bridge regression includes default markdown intent and explicit native-tab
+requests; the browser check also verifies no native IPC and usable original UI.
