@@ -1,0 +1,19 @@
+--- a/webview/assets/app-initial-236e1501144c.js
++++ b/webview/assets/app-initial-236e1501144c.js
+@@ -494960,6 +494960,16 @@
+ function aBs(e, t, n) {
+   if (t === `transcription`) {
+     if (n instanceof hD) {
++      if (
++        n.status === 403 &&
++        /_cf_chl_opt|enable javascript and cookies to continue/i.test(n.message)
++      )
++        return {
++          message: (e.locale ?? navigator.language).startsWith(`zh`)
++            ? `语音转录服务的连接验证失败。请稍后重试；这不是麦克风权限问题。`
++            : `The transcription service requires connection verification. Try again later; microphone permission is not the problem.`,
++          canRetry: !0,
++        };
+       if (n.status === 429) {
+         let e = Qds(n);
+         if (e != null) return { message: e.message, canRetry: !1 };
