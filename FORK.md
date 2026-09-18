@@ -129,3 +129,17 @@ For browser timing, Playwright `httpCredentials` disables cache through request
 interception. Its repeated navigations are not warm-cache measurements; remove
 that hook after browser authentication and explicitly enable cache for a warm
 comparison. Preserve a separate cold-load comparison.
+
+### Touch scrolling over sortable sidebar rows
+
+Desktop sortable wrappers use `touch-none`, including rows whose drag sensor is
+inactive. The mobile sidebar overrides these wrappers with `pan-y pinch-zoom`,
+so native vertical scrolling cancels pointer dragging and remains available after
+holding a row. Desktop drag styling stays unchanged.
+
+`node tests/browser/sidebar-scroll.cjs` sends actual Chromium touch input over
+existing rows, both immediately and after a 650ms hold, and checks scroll offset,
+absence of menus and the desktop breakpoint. It temporarily constrains the scroll
+viewport to work with short catalogs; it does not change stored chats. The usual
+browser environment variables apply; `TEST_AUTH_FILE` optionally supplies a Basic
+password from a local file (with `TEST_AUTH_USER`, default `codex`).

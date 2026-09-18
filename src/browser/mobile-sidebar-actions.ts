@@ -5,6 +5,9 @@ const style = document.createElement('style');
 style.textContent = `
 @layer theme {
 @media (max-width: 768px) {
+  /* Desktop sortable rows disable native panning even when dragging is disabled.
+     Let the browser claim vertical swipes and cancel the pointer drag instead. */
+  .app-shell-left-panel .touch-none { touch-action: pan-y pinch-zoom !important; }
   .app-shell-left-panel [class~="group/folder-row"] .w-0:has(button[aria-haspopup="menu"]) { width: auto !important; overflow: visible !important; opacity: 1 !important; }
   .app-shell-left-panel [class~="group/folder-row"] { min-height: 44px; }
   .app-shell-left-panel [class~="group/folder-row"] button[aria-haspopup="menu"] { width: 44px !important; height: 44px !important; }
