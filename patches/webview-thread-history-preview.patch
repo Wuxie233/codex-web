@@ -1,0 +1,12 @@
+--- a/webview/assets/app-initial-236e1501144c.js
++++ b/webview/assets/app-initial-236e1501144c.js
+@@ -142754,6 +142754,9 @@
+     s,
+   );
+   if (l === `notLoaded`) return { response: d };
++  // Show recent items before fetching the rest through existing pagination.
++  // Live reconciliation must retain its original snapshot budget.
++  if (u === `thread/turns/list`) t = Math.min(t, 50);
+   let f = [],
+     p = {},
+     m = e.getConversation(Gg(r)),

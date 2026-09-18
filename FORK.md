@@ -143,3 +143,14 @@ absence of menus and the desktop breakpoint. It temporarily constrains the scrol
 viewport to work with short catalogs; it does not change stored chats. The usual
 browser environment variables apply; `TEST_AUTH_FILE` optionally supplies a Basic
 password from a local file (with `TEST_AUTH_USER`, default `codex`).
+
+### Conversation history previews
+
+The browser caps each turn's ordinary paginated history preview at 50 items.
+This bounds serial item reads while opening a long conversation or paging older
+turns. Existing item cursors, opening user input, and load-more behavior retain
+access to the rest of each turn. Metadata-only queries and live reconciliation
+keep their original behavior. This does not change durable or legacy history.
+
+`node --test tests/thread-history-pagination.test.cjs` exercises the patched
+bundle pagination against long and short histories, including cursor continuation.
