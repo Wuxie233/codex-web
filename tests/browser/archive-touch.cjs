@@ -9,14 +9,24 @@ const {chromium} = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
     const trigger = page.locator('[data-app-shell-sidebar-trigger]').first();
     await trigger.tap();
     const archive = page.locator('.app-shell-left-panel').getByRole('button',{name:/^(归档聊天|Archive chat)$/}).first();
+    if (await archive.count() === 0) {
+      const projects = page.locator('.app-shell-left-panel [class~="group/folder-row"]');
+      await projects.first().waitFor();
+      for (let i = 0; i < await projects.count(); i++) {
+        await projects.nth(i).tap({position:{x:40,y:15}});
+        try { await archive.waitFor({timeout:3000}); break; } catch {}
+      }
+    }
     await archive.waitFor({timeout:60000});
     const state = await archive.evaluate(e => {
       let opacity = 1;
       for(let n=e;n;n=n.parentElement) opacity *= Number(getComputedStyle(n).opacity);
       const r=e.getBoundingClientRect();
-      return {opacity, width:r.width, height:r.height};
+      return {opacity, width:r.width, height:r.height, icon: getComputedStyle(e.querySelector('svg')).display, text: getComputedStyle(e, '::after').content};
     });
-    assert(state.opacity > 0.9 && state.width >= 44 && state.height >= 44, JSON.stringify(state));
+    assert(state.opacity > 0.9 && state.width > 0 && state.width < 44 && state.height > 0 && state.height < 44, JSON.stringify(state));
+    assert.notEqual(state.icon, 'none', 'original archive icon remains visible');
+    assert(['none', 'normal', '""'].includes(state.text), 'no added text label');
     await archive.tap();
     const dialog = page.locator('.codex-web-archive-confirm');
     await dialog.waitFor();
@@ -47,6 +57,6 @@ const {chromium} = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
     });
     await dialog.getByRole('button', {name:'Archive', exact:true}).click();
     assert.equal(await page.evaluate(() => window.archiveTestCalls), 1);
-    console.log('PASS: visible 44px archive target, cancel/Escape, single replay and detached target');
+    console.log('PASS: visible native archive icon, cancel/Escape, single replay and detached target');
   } finally { await browser.close(); }
 })().catch(error=>{console.error(error);process.exitCode=1});

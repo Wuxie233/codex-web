@@ -305,11 +305,6 @@ function WorkspaceRootDialog({
                           "!px-0",
                           "shrink-0",
                         ].join(" ")}
-                        style={
-                          touchLayout
-                            ? { minWidth: 44, minHeight: 44 }
-                            : undefined
-                        }
                         disabled={!parentPath || isBusy}
                         onClick={() => {
                           if (parentPath) {
@@ -400,92 +395,42 @@ function WorkspaceRootDialog({
                         ) : (
                           entries.map((entry) => {
                             const selected = entry.path === selectedPath;
-                            if (!touchLayout)
-                              return (
-                                <button
-                                  className={[
-                                    "flex",
-                                    "w-full",
-                                    "min-w-0",
-                                    "self-stretch",
-                                    "items-center",
-                                    "gap-2",
-                                    "px-3",
-                                    "py-1.5",
-                                    "text-left",
-                                    "text-sm",
-                                    "hover:bg-token-foreground/5",
-                                    selected
-                                      ? "bg-token-list-hover-background"
-                                      : "",
-                                  ]
-                                    .filter(Boolean)
-                                    .join(" ")}
-                                  data-path={entry.path}
-                                  key={entry.path}
-                                  onClick={() => {
-                                    setUserSelectedPath(entry.path);
-                                  }}
-                                  onDoubleClick={() => {
-                                    navigateTo(entry.path);
-                                  }}
-                                  title={entry.path}
-                                  type="button"
-                                >
-                                  <FolderIcon />
-                                  <span className={["truncate"].join(" ")}>
-                                    {entry.name}
-                                  </span>
-                                </button>
-                              );
                             return (
-                              <div
+                              <button
                                 className={[
                                   "flex",
                                   "w-full",
                                   "min-w-0",
+                                  "self-stretch",
                                   "items-center",
+                                  "gap-2",
+                                  "px-3",
+                                  "py-1.5",
+                                  "text-left",
+                                  "text-sm",
+                                  "hover:bg-token-foreground/5",
                                   selected
                                     ? "bg-token-list-hover-background"
                                     : "",
                                 ]
                                   .filter(Boolean)
                                   .join(" ")}
+                                data-path={entry.path}
                                 key={entry.path}
+                                onClick={() => {
+                                  setUserSelectedPath(entry.path);
+                                }}
+                                onDoubleClick={() => {
+                                  navigateTo(entry.path);
+                                }}
+                                title={entry.path}
+                                type="button"
                               >
-                                <button
-                                  className="flex min-w-0 flex-1 items-center gap-2 px-3 py-1.5 text-left text-sm hover:bg-token-foreground/5"
-                                  style={
-                                    touchLayout ? { minHeight: 44 } : undefined
-                                  }
-                                  aria-pressed={selected}
-                                  data-path={entry.path}
-                                  disabled={isBusy}
-                                  onClick={() =>
-                                    setUserSelectedPath(entry.path)
-                                  }
-                                  onDoubleClick={() => navigateTo(entry.path)}
-                                  title={entry.path}
-                                  type="button"
-                                >
-                                  <FolderIcon />
-                                  <span className="truncate">{entry.name}</span>
-                                </button>
-                                <button
-                                  aria-label={`Open folder ${entry.name}`}
-                                  className="shrink-0 rounded px-3 text-sm hover:bg-token-foreground/5"
-                                  style={
-                                    touchLayout
-                                      ? { minWidth: 44, minHeight: 44 }
-                                      : undefined
-                                  }
-                                  disabled={isBusy}
-                                  onClick={() => navigateTo(entry.path)}
-                                  type="button"
-                                >
-                                  Open
-                                </button>
-                              </div>
+                                <FolderIcon />
+                                <span className={["truncate"].join(" ")}>
+                                  {entry.name}
+                                </span>
+                              </button>
                             );
                           })
                         )}
@@ -538,7 +483,6 @@ function WorkspaceRootDialog({
                     "text-base",
                     "leading-[18px]",
                   ].join(" ")}
-                  style={touchLayout ? { minHeight: 44 } : undefined}
                   onClick={() => onClose(null)}
                   type="button"
                 >
@@ -568,7 +512,6 @@ function WorkspaceRootDialog({
                     "text-base",
                     "leading-[18px]",
                   ].join(" ")}
-                  style={touchLayout ? { minHeight: 44 } : undefined}
                   disabled={!selectedPath || isBusy}
                   type="submit"
                 >
@@ -596,18 +539,6 @@ function WorkspaceRootDialog({
             "focus:ring-token-focus-border",
             "focus:outline-none",
           ].join(" ")}
-          style={
-            touchLayout
-              ? {
-                  minWidth: 44,
-                  minHeight: 44,
-                  display: "grid",
-                  placeItems: "center",
-                  top: 4,
-                  right: 4,
-                }
-              : undefined
-          }
           onClick={() => onClose(null)}
           type="button"
         >

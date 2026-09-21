@@ -11,7 +11,11 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || "playwright");
       { width: 844, height: 390, touch: true },
       { width: 1280, height: 900, touch: false },
     ]) {
-      const page = await browser.newPage({ viewport: { width, height }, hasTouch: touch, isMobile: touch });
+      const page = await browser.newPage({
+        viewport: { width, height },
+        hasTouch: touch,
+        isMobile: touch,
+      });
       await page.goto(process.env.TEST_BASE_URL || "http://127.0.0.1:8214/");
       await page
         .locator("[contenteditable=true]")
@@ -44,22 +48,67 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || "playwright");
       );
       await picker.waitFor({ timeout: 20000 });
       const bounds = await picker.boundingBox();
-      assert(bounds.y >= 0 && bounds.y + bounds.height <= height, "picker fits visible viewport");
-      if (touch) {
-      const pathInput = picker.getByRole("textbox", { name: "Selected folder path" });
-      const beforePath = await pathInput.inputValue();
-      const openFolder = picker.getByRole("button", { name: /^Open folder / }).first();
-      await openFolder.waitFor();
-      await openFolder.tap();
-      await page.waitForFunction(previous => {
-        const input = document.querySelector('#codex-web-workspace-root-dialog input');
-        return input && input.value !== previous;
-      }, beforePath);
-      } else {
-        assert.equal(await picker.getByRole("button", { name: /^Open folder / }).count(), 0, "desktop keeps original folder rows");
-      }
-      const selectBounds = await picker.getByRole("button", { name: "Select folder", exact: true }).boundingBox();
-      assert(selectBounds.y >= 0 && selectBounds.y + selectBounds.height <= height, "confirmation stays visible");
+      assert(
+        bounds.y >= 0 && bounds.y + bounds.height <= height,
+        "picker fits visible viewport",
+      );
+      assert.equal(
+        await picker.getByRole("button", { name: /^Open folder / }).count(),
+        0,
+        "all inputs keep original folder rows without an Open action",
+      );
+      const pathInput = picker.getByRole("textbox", {
+        name: "Selected folder path",
+      });
+      const folderRow = picker.locator("button[data-path]").first();
+      await folderRow.waitFor();
+      const folderPath = await folderRow.getAttribute("data-path");
+      const initialEntries = await picker
+        .locator("button[data-path]")
+        .evaluateAll((rows) =>
+          rows.map((row) => row.getAttribute("data-path")),
+        );
+      if (touch) await folderRow.tap();
+      else await folderRow.click();
+      assert.equal(
+        await pathInput.inputValue(),
+        folderPath,
+        "single click selects folder",
+      );
+      assert.deepEqual(
+        await picker
+          .locator("button[data-path]")
+          .evaluateAll((rows) =>
+            rows.map((row) => row.getAttribute("data-path")),
+          ),
+        initialEntries,
+        "single click preserves current directory listing",
+      );
+      // Exercise the existing double-click handler; do not add a touch gesture.
+      await folderRow.dblclick();
+      await page.waitForFunction((path) => {
+        const root = document.querySelector("#codex-web-workspace-root-dialog");
+        const submit = root?.querySelector("button[type=submit]");
+        return (
+          submit &&
+          !submit.disabled &&
+          !Array.from(root.querySelectorAll("button[data-path]")).some(
+            (row) => row.dataset.path === path,
+          )
+        );
+      }, folderPath);
+      assert.equal(
+        await pathInput.inputValue(),
+        folderPath,
+        "double click enters selected folder",
+      );
+      const selectBounds = await picker
+        .getByRole("button", { name: "Select folder", exact: true })
+        .boundingBox();
+      assert(
+        selectBounds.y >= 0 && selectBounds.y + selectBounds.height <= height,
+        "confirmation stays visible",
+      );
       await picker.getByRole("button", { name: "Cancel", exact: true }).click();
       await picker.waitFor({ state: "detached" });
       await addSource.click();

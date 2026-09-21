@@ -4,33 +4,17 @@ const mobile = matchMedia('(hover: none) and (pointer: coarse)');
 const style = document.createElement('style');
 style.textContent = `
 @layer theme {
-.codex-web-sidebar-more { display: none; }
 @media (hover: none) and (pointer: coarse) {
-  /* Touch input needs native panning on a wide tablet. */
   .app-shell-left-panel .touch-none { touch-action: pan-y pinch-zoom !important; }
   .app-shell-left-panel [class~="group/folder-row"] :is(.w-0, .opacity-0):has(button) { width: auto !important; overflow: visible !important; opacity: 1 !important; }
-  .app-shell-left-panel [class~="group/folder-row"] { min-height: 44px; }
-  .app-shell-left-panel [class~="group/folder-row"] button { width: 44px !important; height: 44px !important; }
-  .app-shell-left-panel [class~="group/folder-row"] .grid:has(.col-start-1 button) { min-width: 44px !important; height: 44px !important; }
   .app-shell-left-panel [class~="group/folder-row"] .grid:has(.col-start-1 button) > div.col-start-1 { visibility: hidden; }
-  .app-shell-left-panel [class~="group/nav-section-title"] { min-height: 44px; height: auto !important; }
-  .app-shell-left-panel [class~="group/nav-section-title"] .pointer-events-none:has(button) { opacity: 1 !important; pointer-events: auto !important; }
-  .app-shell-left-panel [class~="group/nav-section-title"] button { min-width: 44px !important; min-height: 44px !important; }
-  .app-shell-left-panel .codex-web-sidebar-more { display: inline-flex; flex-shrink: 0; width: 44px; height: 44px; align-items: center; justify-content: center; border-radius: 8px; font-size: 24px; pointer-events: auto; }
+  .app-shell-left-panel [class~="group/nav-section-title"] .pointer-events-none:has(button),
   .app-shell-left-panel .pointer-events-none:has([data-app-action-sidebar-project-create]) { opacity: 1 !important; pointer-events: auto !important; }
-  .app-shell-left-panel [data-app-action-sidebar-project-create] { width: 44px !important; height: 44px !important; }
-  .app-shell-left-panel .sidebar-item:has(${archiveSelector}) { min-height: 64px; padding-inline-end: 112px !important; }
-  .app-shell-left-panel .sidebar-item .absolute:has(${archiveSelector}) { z-index: 20 !important; opacity: 1 !important; width: 104px !important; align-items: center !important; padding-top: 0 !important; }
-  /* Local/cloud rows can supply renderActions instead of the archive rail. */
-  .app-shell-left-panel .sidebar-item:has(.absolute button[aria-haspopup="menu"]) { min-height: 64px; padding-inline-end: 112px !important; }
-  .app-shell-left-panel .sidebar-item .absolute:has(button[aria-haspopup="menu"]) { z-index: 20 !important; opacity: 1 !important; width: 104px !important; align-items: center !important; padding-top: 0 !important; }
-  .app-shell-left-panel .sidebar-item .absolute:has(button[aria-haspopup="menu"]) button { width: 44px !important; height: 44px !important; flex-shrink: 0; pointer-events: auto; }
-  .app-shell-left-panel [data-app-action-sidebar-thread-row]:has(.codex-web-sidebar-more) { padding-inline-end: 156px !important; }
-  .app-shell-left-panel [data-app-action-sidebar-thread-row] .absolute:has(.codex-web-sidebar-more) { width: 148px !important; gap: 4px; }
-  .app-shell-left-panel ${archiveSelector} { opacity: 1 !important; pointer-events: auto; width: 44px !important; height: 44px !important; color: inherit !important; border: 1px solid #888 !important; border-radius: 8px !important; background: var(--color-surface, #242424) !important; }
-  .app-shell-left-panel ${archiveSelector} svg { display: none !important; }
-  .app-shell-left-panel ${archiveSelector}::after { content: attr(aria-label); font-size: 13px; white-space: normal; line-height: 16px; }
-  .app-shell-left-panel button[aria-label="归档聊天"]::after { content: "归档"; }
+  /* Reveal the original action rail and reserve space without restyling its buttons. */
+  .app-shell-left-panel .sidebar-item:has(.absolute button) { padding-inline-end: 64px !important; }
+  .app-shell-left-panel .sidebar-item .absolute:has(button) { z-index: 20 !important; opacity: 1 !important; width: auto !important; pointer-events: auto !important; }
+  .app-shell-left-panel .sidebar-item:has(.absolute button) .absolute[data-hover-card-open-immediately] { visibility: hidden !important; }
+  .app-shell-left-panel .sidebar-item .absolute button { opacity: 1 !important; pointer-events: auto !important; }
 }
 }
 .codex-web-archive-confirm { margin: auto; width: min(320px, calc(100vw - 40px)); box-sizing: border-box; padding: 20px; border: 1px solid #888; border-radius: 16px; background: #fff; color: #181818; }
