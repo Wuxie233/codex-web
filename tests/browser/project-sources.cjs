@@ -6,8 +6,12 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || "playwright");
     args: ["--no-sandbox"],
   });
   try {
-    for (const width of [390, 1280]) {
-      const page = await browser.newPage({ viewport: { width, height: 900 } });
+    for (const { width, height, touch } of [
+      { width: 390, height: 900, touch: true },
+      { width: 844, height: 390, touch: true },
+      { width: 1280, height: 900, touch: false },
+    ]) {
+      const page = await browser.newPage({ viewport: { width, height }, hasTouch: touch, isMobile: touch });
       await page.goto(process.env.TEST_BASE_URL || "http://127.0.0.1:8214/");
       await page
         .locator("[contenteditable=true]")
@@ -22,7 +26,7 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || "playwright");
       const create = page.getByRole("button", {
         name: /^(添加新项目|Add new project)$/,
       });
-      if (width >= 768) {
+      if (!touch) {
         // Move into the header first so Desktop reveals its hover-only controls.
         const box = await create.boundingBox();
         await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
@@ -38,7 +42,24 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || "playwright");
       const picker = page.locator(
         '[role=dialog][aria-labelledby="codex-web-workspace-root-dialog-title"]',
       );
-      await picker.waitFor({ timeout: 5000 });
+      await picker.waitFor({ timeout: 20000 });
+      const bounds = await picker.boundingBox();
+      assert(bounds.y >= 0 && bounds.y + bounds.height <= height, "picker fits visible viewport");
+      if (touch) {
+      const pathInput = picker.getByRole("textbox", { name: "Selected folder path" });
+      const beforePath = await pathInput.inputValue();
+      const openFolder = picker.getByRole("button", { name: /^Open folder / }).first();
+      await openFolder.waitFor();
+      await openFolder.tap();
+      await page.waitForFunction(previous => {
+        const input = document.querySelector('#codex-web-workspace-root-dialog input');
+        return input && input.value !== previous;
+      }, beforePath);
+      } else {
+        assert.equal(await picker.getByRole("button", { name: /^Open folder / }).count(), 0, "desktop keeps original folder rows");
+      }
+      const selectBounds = await picker.getByRole("button", { name: "Select folder", exact: true }).boundingBox();
+      assert(selectBounds.y >= 0 && selectBounds.y + selectBounds.height <= height, "confirmation stays visible");
       await picker.getByRole("button", { name: "Cancel", exact: true }).click();
       await picker.waitFor({ state: "detached" });
       await addSource.click();

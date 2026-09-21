@@ -39,6 +39,16 @@ function WorkspaceRootDialog({
   const [directoryPath, setDirectoryPath] = useState<string | null>(null);
   const [userSelectedPath, setUserSelectedPath] = useState<string | null>(null);
   const dialogRef = useRef<HTMLDivElement | null>(null);
+  const [touchLayout, setTouchLayout] = useState(
+    () => window.matchMedia("(hover: none) and (pointer: coarse)").matches,
+  );
+  useEffect(() => {
+    const media = window.matchMedia("(hover: none) and (pointer: coarse)");
+    const update = () => setTouchLayout(media.matches);
+    update();
+    media.addEventListener("change", update);
+    return () => media.removeEventListener("change", update);
+  }, []);
 
   const directoryQuery = useQuery({
     placeholderData: keepPreviousData,
@@ -94,7 +104,12 @@ function WorkspaceRootDialog({
   const selectedPathValue = selectedPath ?? "";
 
   return (
-    <>
+    <div
+      // This separate React root sits above the project's Radix dialog. Keep
+      // its taps from being treated as outside interactions of that dialog.
+      onPointerDown={(event) => event.stopPropagation()}
+      onClick={(event) => event.stopPropagation()}
+    >
       <div
         aria-hidden="true"
         className={[
@@ -136,11 +151,23 @@ function WorkspaceRootDialog({
         data-state="open"
         ref={dialogRef}
         role="dialog"
-        style={{ pointerEvents: "auto" }}
+        style={
+          touchLayout
+            ? {
+                pointerEvents: "auto",
+                display: "flex",
+                flexDirection: "column",
+                height:
+                  "min(460px, calc(var(--codex-web-visible-height, 100dvh) - 16px))",
+                overflowY: "auto",
+              }
+            : { pointerEvents: "auto" }
+        }
         tabIndex={-1}
       >
         <form
           className={["flex", "flex-col", "gap-0"].join(" ")}
+          style={touchLayout ? { flex: 1, minHeight: 0 } : undefined}
           onSubmit={handleSubmit}
         >
           <div
@@ -154,6 +181,7 @@ function WorkspaceRootDialog({
               "leading-normal",
               "tracking-normal",
             ].join(" ")}
+            style={touchLayout ? { flex: 1, minHeight: 0 } : undefined}
           >
             <div
               className={[
@@ -205,8 +233,12 @@ function WorkspaceRootDialog({
                 "first:pt-0",
                 "gap-2",
               ].join(" ")}
+              style={touchLayout ? { flex: 1, minHeight: 0 } : undefined}
             >
-              <label className={["flex", "flex-col", "gap-0.5"].join(" ")}>
+              <div
+                className={["flex", "flex-col", "gap-0.5"].join(" ")}
+                style={touchLayout ? { flex: 1, minHeight: 0 } : undefined}
+              >
                 <span
                   className={["font-medium", "text-token-text-primary"].join(
                     " ",
@@ -217,11 +249,11 @@ function WorkspaceRootDialog({
                 <div
                   className={[
                     "flex",
-                    "h-70",
-                    "min-h-56",
                     "flex-col",
                     "gap-3",
+                    ...(!touchLayout ? ["h-70", "min-h-56"] : []),
                   ].join(" ")}
+                  style={touchLayout ? { flex: 1, minHeight: 0 } : undefined}
                 >
                   <div
                     className={[
@@ -273,6 +305,11 @@ function WorkspaceRootDialog({
                           "!px-0",
                           "shrink-0",
                         ].join(" ")}
+                        style={
+                          touchLayout
+                            ? { minWidth: 44, minHeight: 44 }
+                            : undefined
+                        }
                         disabled={!parentPath || isBusy}
                         onClick={() => {
                           if (parentPath) {
@@ -363,42 +400,92 @@ function WorkspaceRootDialog({
                         ) : (
                           entries.map((entry) => {
                             const selected = entry.path === selectedPath;
+                            if (!touchLayout)
+                              return (
+                                <button
+                                  className={[
+                                    "flex",
+                                    "w-full",
+                                    "min-w-0",
+                                    "self-stretch",
+                                    "items-center",
+                                    "gap-2",
+                                    "px-3",
+                                    "py-1.5",
+                                    "text-left",
+                                    "text-sm",
+                                    "hover:bg-token-foreground/5",
+                                    selected
+                                      ? "bg-token-list-hover-background"
+                                      : "",
+                                  ]
+                                    .filter(Boolean)
+                                    .join(" ")}
+                                  data-path={entry.path}
+                                  key={entry.path}
+                                  onClick={() => {
+                                    setUserSelectedPath(entry.path);
+                                  }}
+                                  onDoubleClick={() => {
+                                    navigateTo(entry.path);
+                                  }}
+                                  title={entry.path}
+                                  type="button"
+                                >
+                                  <FolderIcon />
+                                  <span className={["truncate"].join(" ")}>
+                                    {entry.name}
+                                  </span>
+                                </button>
+                              );
                             return (
-                              <button
+                              <div
                                 className={[
                                   "flex",
                                   "w-full",
                                   "min-w-0",
-                                  "self-stretch",
                                   "items-center",
-                                  "gap-2",
-                                  "px-3",
-                                  "py-1.5",
-                                  "text-left",
-                                  "text-sm",
-                                  "hover:bg-token-foreground/5",
                                   selected
                                     ? "bg-token-list-hover-background"
                                     : "",
                                 ]
                                   .filter(Boolean)
                                   .join(" ")}
-                                data-path={entry.path}
                                 key={entry.path}
-                                onClick={() => {
-                                  setUserSelectedPath(entry.path);
-                                }}
-                                onDoubleClick={() => {
-                                  navigateTo(entry.path);
-                                }}
-                                title={entry.path}
-                                type="button"
                               >
-                                <FolderIcon />
-                                <span className={["truncate"].join(" ")}>
-                                  {entry.name}
-                                </span>
-                              </button>
+                                <button
+                                  className="flex min-w-0 flex-1 items-center gap-2 px-3 py-1.5 text-left text-sm hover:bg-token-foreground/5"
+                                  style={
+                                    touchLayout ? { minHeight: 44 } : undefined
+                                  }
+                                  aria-pressed={selected}
+                                  data-path={entry.path}
+                                  disabled={isBusy}
+                                  onClick={() =>
+                                    setUserSelectedPath(entry.path)
+                                  }
+                                  onDoubleClick={() => navigateTo(entry.path)}
+                                  title={entry.path}
+                                  type="button"
+                                >
+                                  <FolderIcon />
+                                  <span className="truncate">{entry.name}</span>
+                                </button>
+                                <button
+                                  aria-label={`Open folder ${entry.name}`}
+                                  className="shrink-0 rounded px-3 text-sm hover:bg-token-foreground/5"
+                                  style={
+                                    touchLayout
+                                      ? { minWidth: 44, minHeight: 44 }
+                                      : undefined
+                                  }
+                                  disabled={isBusy}
+                                  onClick={() => navigateTo(entry.path)}
+                                  type="button"
+                                >
+                                  Open
+                                </button>
+                              </div>
                             );
                           })
                         )}
@@ -406,7 +493,7 @@ function WorkspaceRootDialog({
                     </div>
                   </div>
                 </div>
-              </label>
+              </div>
             </div>
 
             <div
@@ -451,6 +538,7 @@ function WorkspaceRootDialog({
                     "text-base",
                     "leading-[18px]",
                   ].join(" ")}
+                  style={touchLayout ? { minHeight: 44 } : undefined}
                   onClick={() => onClose(null)}
                   type="button"
                 >
@@ -480,6 +568,7 @@ function WorkspaceRootDialog({
                     "text-base",
                     "leading-[18px]",
                   ].join(" ")}
+                  style={touchLayout ? { minHeight: 44 } : undefined}
                   disabled={!selectedPath || isBusy}
                   type="submit"
                 >
@@ -507,13 +596,25 @@ function WorkspaceRootDialog({
             "focus:ring-token-focus-border",
             "focus:outline-none",
           ].join(" ")}
+          style={
+            touchLayout
+              ? {
+                  minWidth: 44,
+                  minHeight: 44,
+                  display: "grid",
+                  placeItems: "center",
+                  top: 4,
+                  right: 4,
+                }
+              : undefined
+          }
           onClick={() => onClose(null)}
           type="button"
         >
           <CloseIcon />
         </button>
       </div>
-    </>
+    </div>
   );
 }
 

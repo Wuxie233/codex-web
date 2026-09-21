@@ -77,18 +77,18 @@ It uses the same browser tool environment variables as the viewport test.
 
 ## Deliberate archive actions on touch screens
 
-`src/browser/mobile-sidebar-actions.ts` makes the mobile sidebar's English and
+`src/browser/mobile-sidebar-actions.ts` makes the touch sidebar's English and
 Chinese archive controls visible, reserves row space, and uses 44px targets.
 Its CSS uses the existing theme layer to override Desktop's important utility
 sizes. A DOM dialog gates the original click; Cancel/Escape never replay it,
 and confirmation replays it once only if the original button is still mounted.
-Desktop behavior is unchanged. `tests/browser/archive-touch.cjs` verifies target
+Mouse-only desktop behavior is unchanged. `tests/browser/archive-touch.cjs` verifies target
 visibility/size and cancellation against existing rows without archiving them.
 
 ### Native projects and folder selection
 
 The sidebar uses Desktop's native project tree and recent-chat list. Thread
-working directories do not create synthetic workspace groups. On narrow screens,
+working directories do not create synthetic workspace groups. On touch-primary devices without hover,
 the project creation and per-project menu controls stay visible and have 44px
 touch targets. The project's hover-only action containers must also expand on
 touch screens so their buttons are not clipped out of the row.
@@ -196,3 +196,20 @@ main-process feature flags can still route them into native browser surfaces or
 link-destination prompts. Non-web protocol dispatch keeps its existing behavior.
 The bridge regression includes default markdown intent and explicit native-tab
 requests; the browser check also verifies no native IPC and usable original UI.
+
+### Tablet touch interaction
+
+Input adaptations use `(hover: none) and (pointer: coarse)` independently of
+the sidebar layout breakpoint. A mouse-primary desktop does not opt in merely
+because it also has a touchscreen. Tablets retain the two-pane layout while project and chat creation
+controls stay visible with 44px targets. Touch rows pan natively; the scoped
+`webview-touch-sidebar.patch` disables sidebar touch drag activation and long-press
+context menus, with an explicit row menu button preserving conversation actions.
+Mouse drag and right-click remain available. The patch is tied to the pinned
+Desktop bundle and must be rechecked when upgrading it.
+
+The folder picker has a visible-height bound and explicit per-folder Open buttons.
+Composer footer controls have larger touch targets. Validate with
+`tests/browser/sidebar-scroll.cjs` (phone/tablet long holds, row menus, mouse)
+and `tests/browser/project-sources.cjs` (including short landscape viewports).
+These browser touch simulations do not replace testing physical tablet gestures.

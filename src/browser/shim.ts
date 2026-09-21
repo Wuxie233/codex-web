@@ -1,4 +1,5 @@
 import "./mobile-sidebar-actions";
+import "./touch-controls";
 import {
   mapBrowserPathToInitialRoute,
   mapMemoryPathToBrowserPath,
