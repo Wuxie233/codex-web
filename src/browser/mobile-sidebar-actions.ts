@@ -11,9 +11,10 @@ style.textContent = `
   .app-shell-left-panel [class~="group/nav-section-title"] .pointer-events-none:has(button),
   .app-shell-left-panel .pointer-events-none:has([data-app-action-sidebar-project-create]) { opacity: 1 !important; pointer-events: auto !important; }
   /* Reveal the original action rail and reserve space without restyling its buttons. */
-  .app-shell-left-panel .sidebar-item:has(.absolute button) { padding-inline-end: 64px !important; }
+  .app-shell-left-panel .sidebar-item:has(.absolute button) { padding-inline-end: 116px !important; }
   .app-shell-left-panel .sidebar-item .absolute:has(button) { z-index: 20 !important; opacity: 1 !important; width: auto !important; pointer-events: auto !important; }
-  .app-shell-left-panel .sidebar-item:has(.absolute button) .absolute[data-hover-card-open-immediately] { visibility: hidden !important; }
+  /* Status badges share the trailing edge upstream; keep them beside the revealed actions. */
+  .app-shell-left-panel .sidebar-item:has(.absolute button) .absolute[data-hover-card-open-immediately] { visibility: visible !important; display: flex !important; inset-inline-end: 60px !important; pointer-events: none !important; }
   .app-shell-left-panel .sidebar-item .absolute button { opacity: 1 !important; pointer-events: auto !important; }
 }
 }
