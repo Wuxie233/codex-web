@@ -217,7 +217,10 @@ replace testing physical tablet gestures.
 
 `webview-file-download.patch` intercepts the native open-in helper through
 `__ELECTRON_SHIM__.downloadLocalFile`. Local archive and installer links download
-through `/__backend/download?path=...`; source, image and document previews retain
+through `/__backend/download?path=...`. The authenticated page fetches the bytes
+before saving a Blob URL so an external download handler does not need to
+repeat an authenticated server request. Failed HTTP responses are shown as errors
+instead of being saved as files. Source, image and document previews retain
 their existing behavior. Remote host requests are not mapped onto local files.
 The route streams regular files as attachments with UTF-8 filenames and uses the
 same deployment authentication boundary as `/@fs/`; keep it behind that boundary.
