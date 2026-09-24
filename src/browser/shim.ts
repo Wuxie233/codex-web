@@ -1,4 +1,5 @@
 import "./mobile-sidebar-actions";
+import { downloadLocalFile, type LocalFileOpenRequest } from "./downloads";
 import {
   mapBrowserPathToInitialRoute,
   mapMemoryPathToBrowserPath,
@@ -109,6 +110,7 @@ type StatsigGateEvaluation = {
 };
 
 type ElectronShimState = {
+  downloadLocalFile?: (request: LocalFileOpenRequest) => boolean;
   initialRoute?: string;
   initialSidebarState?: boolean;
   closeSidebar?: () => void;
@@ -368,6 +370,7 @@ const themeMediaQuery = matchMedia("(prefers-color-scheme: dark)");
 const mobileMediaQuery = matchMedia("(max-width: 768px)");
 const initialSidebarState = !mobileMediaQuery.matches;
 const electronShim = (window.__ELECTRON_SHIM__ ??= {});
+electronShim.downloadLocalFile = downloadLocalFile;
 const buildFlavor: "prod" | "dev" | "agent" | string = "prod";
 
 Object.assign(globalThis, {

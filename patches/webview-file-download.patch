@@ -1,0 +1,10 @@
+--- a/webview/assets/app-initial-236e1501144c.js
++++ b/webview/assets/app-initial-236e1501144c.js
+@@ -292963,6 +292963,7 @@
+   jRi(e).catch(() => void 0);
+ }
+ async function jRi(e) {
++  if (window.__ELECTRON_SHIM__?.downloadLocalFile?.(e)) return { success: true };
+   return lx(iX.openIn.open(e));
+ }
+ var MRi,

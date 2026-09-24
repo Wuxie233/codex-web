@@ -212,3 +212,14 @@ native styling. Validate with `tests/browser/sidebar-scroll.cjs` (phone/tablet
 swipes, original context-menu events, mouse) and `tests/browser/project-sources.cjs`
 (including short landscape viewports). These browser touch simulations do not
 replace testing physical tablet gestures.
+
+### Browser file downloads
+
+`webview-file-download.patch` intercepts the native open-in helper through
+`__ELECTRON_SHIM__.downloadLocalFile`. Local archive and installer links download
+through `/__backend/download?path=...`; source, image and document previews retain
+their existing behavior. Remote host requests are not mapped onto local files.
+The route streams regular files as attachments with UTF-8 filenames and uses the
+same deployment authentication boundary as `/@fs/`; keep it behind that boundary.
+Recheck the helper patch when upgrading Desktop bundles. Relevant checks are
+`tests/browser-downloads.test.cjs` and `tests/download.test.cjs`.

@@ -19,6 +19,7 @@ import fastifyStatic from "@fastify/static";
 import { installModuleAliasHook } from "./module";
 import { glob } from "glob";
 import { rebaseRequestDeadlines } from "./request-deadline";
+import { registerDownloadRoute } from "./download";
 
 type ServerOptions = {
   host: string;
@@ -414,6 +415,7 @@ function ensureElectronLikeProcessContext(): void {
 async function startIpcBridgeServer(options: ServerOptions): Promise<void> {
   const bridgeState = getIpcMainBridgeState();
   const app = Fastify({ logger: false });
+  registerDownloadRoute(app);
   const websocketServer = new WebSocketServer({ noServer: true });
 
   await app.register(fastifyMultipart, {
