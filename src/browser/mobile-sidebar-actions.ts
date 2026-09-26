@@ -7,14 +7,16 @@ style.textContent = `
 @media (hover: none) and (pointer: coarse) {
   .app-shell-left-panel .touch-none { touch-action: pan-y pinch-zoom !important; }
   .app-shell-left-panel [class~="group/folder-row"] :is(.w-0, .opacity-0):has(button) { width: auto !important; overflow: visible !important; opacity: 1 !important; }
-  .app-shell-left-panel [class~="group/folder-row"] .grid:has(.col-start-1 button) > div.col-start-1 { visibility: hidden; }
+  /* Desktop overlays project status and actions in one grid cell. Touch needs both. */
+  .app-shell-left-panel [class~="group/folder-row"] .grid:has(.col-start-1 button) { display: flex !important; width: auto !important; gap: 6px; }
+  .app-shell-left-panel [class~="group/folder-row"] .grid:has(.col-start-1 button) > div.col-start-1 { visibility: visible !important; }
   .app-shell-left-panel [class~="group/nav-section-title"] .pointer-events-none:has(button),
   .app-shell-left-panel .pointer-events-none:has([data-app-action-sidebar-project-create]) { opacity: 1 !important; pointer-events: auto !important; }
   /* Reveal the original action rail and reserve space without restyling its buttons. */
   .app-shell-left-panel .sidebar-item:has(.absolute button) { padding-inline-end: 116px !important; }
   .app-shell-left-panel .sidebar-item .absolute:has(button) { z-index: 20 !important; opacity: 1 !important; width: auto !important; pointer-events: auto !important; }
   /* Status badges share the trailing edge upstream; keep them beside the revealed actions. */
-  .app-shell-left-panel .sidebar-item:has(.absolute button) .absolute[data-hover-card-open-immediately] { visibility: visible !important; display: flex !important; inset-inline-end: 60px !important; pointer-events: none !important; }
+  .app-shell-left-panel .sidebar-item:has(.absolute button) :is(span, .absolute)[data-hover-card-open-immediately] { position: absolute !important; visibility: visible !important; opacity: 1 !important; display: flex !important; inset-inline-end: 60px !important; pointer-events: none !important; }
   .app-shell-left-panel .sidebar-item .absolute button { opacity: 1 !important; pointer-events: auto !important; }
 }
 }
