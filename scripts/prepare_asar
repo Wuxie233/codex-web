@@ -69,3 +69,4 @@ patch --batch --forward --strip 1 --directory scratch/asar < patches/webview-fil
 patch --batch --forward --strip 1 --directory scratch/asar < patches/webview-worktree-starting-ref.patch
 patch --batch --forward --strip 1 --directory scratch/asar < patches/main-app-tool-lifecycle.patch
 patch --batch --forward --strip 1 --directory scratch/asar < patches/webview-create-thread-visible.patch
+patch --batch --forward --strip 1 --directory scratch/asar < patches/webview-send-message-to-thread.patch
