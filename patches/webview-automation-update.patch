@@ -1,0 +1,8 @@
+--- a/webview/assets/app-initial-236e1501144c.js
++++ b/webview/assets/app-initial-236e1501144c.js
+@@ -117406,5 +117406,4 @@
+       (IOt = new Set([
+-        `automation_update`,
+         `fork_thread`,
+         `handoff_thread`,
+       ])),
