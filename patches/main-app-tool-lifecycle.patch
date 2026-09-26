@@ -1,0 +1,189 @@
+--- a/.vite/build/main-C5K7o1Hr.js
++++ b/.vite/build/main-C5K7o1Hr.js
+@@ -135307,92 +135307,107 @@
+   }
+   async callDynamicAppTool(e, t) {
+     t.throwIfAborted();
+-    let n = this.options.windowManager.getPrimaryWindow()?.webContents.id,
+-      i = [
+-        ...(n == null ? [] : [n]),
+-        ...Array.from(this.readyAppViewWebContentsIds).filter((e) => e !== n),
+-      ],
+-      a = !1;
+-    for (let n of i) {
++    const primary = this.options.windowManager.getPrimaryWindow()?.webContents.id;
++    const candidates = [
++      ...(primary == null ? [] : [primary]),
++      ...Array.from(this.readyAppViewWebContentsIds).filter((id) => id !== primary),
++    ];
++    let supported = !1;
++    for (const id of candidates) {
+       t.throwIfAborted();
+-      let i = this.appViewsByWebContentsId.get(n);
+-      if (i == null || !this.readyAppViewWebContentsIds.has(n)) continue;
++      const view = this.appViewsByWebContentsId.get(id);
++      const contents = l.webContents.fromId(id);
++      if (view == null || contents == null || contents.isDestroyed() ||
++          !this.readyAppViewWebContentsIds.has(id)) continue;
++      // Every bridge await must settle even if a browser disappears without a reply.
++      const bounded = (operation, timeoutMs, stage) => new Promise((resolve, reject) => {
++        let timer, settled = !1;
++        const cleanup = () => {
++          clearTimeout(timer);
++          t.removeEventListener(`abort`, aborted);
++          contents.removeListener(`destroyed`, destroyed);
++        };
++        const finish = (callback, value) => {
++          if (settled) return;
++          settled = !0; cleanup(); callback(value);
++        };
++        const aborted = () => finish(reject, t.reason ?? Error(`App tool call aborted`));
++        const destroyed = () => finish(reject, Error(`App tool window disconnected during ${stage}; execution outcome may be unknown. Do not automatically retry.`));
++        t.addEventListener(`abort`, aborted, { once: !0 });
++        contents.once(`destroyed`, destroyed);
++        timer = setTimeout(() => finish(reject, Error(`App tool window timed out during ${stage}; execution outcome may be unknown. Do not automatically retry.`)), timeoutMs);
++        if (t.aborted) { aborted(); return; }
++        if (contents.isDestroyed()) { destroyed(); return; }
++        Promise.resolve().then(() => {
++          if (settled) return;
++          t.throwIfAborted();
++          if (contents.isDestroyed()) throw Error(`App tool window disconnected`);
++          return operation();
++        }).then(
++          (value) => finish(resolve, value),
++          (error) => finish(reject, error),
++        );
++      });
+       try {
++        const resources = r.Ct();
+         try {
+-          var o = r.Ct();
+-          let t = o.u(await i.services);
+-          if (
+-            t.dynamicAppTools == null ||
+-            ((a = !0), !(await t.dynamicAppTools.canCallTool(e)))
+-          )
++          const services = resources.u(await bounded(() => view.services, 5000, `capability services`));
++          if (services.dynamicAppTools == null) continue;
++          supported = !0;
++          if (!(await bounded(() => services.dynamicAppTools.canCallTool(e), 5000, `capability query`))) continue;
++        } catch (error) {
++          resources.e = error;
++        } finally {
++          resources.d();
++        }
++      } catch (error) {
++        t.throwIfAborted();
++        A5.warning(`Failed to query app window tool capabilities`, {
++          safe: {}, sensitive: { error },
++        });
++        continue;
++      }
++      const response = this.messageHandler.waitForDynamicAppToolResponse(e.params.callId);
++      response.catch(() => void 0);
++      let tools, dispatched = !1, completed = !1;
++      try {
++        const resources = r.Ct();
++        try {
++          tools = resources.u(await bounded(() => view.services, 10000, `dispatch services`)).dynamicAppTools;
++          if (tools == null) throw Error(`The selected app window no longer supports app tools`);
++          const requestedWait = e.params.tool === `wait_threads` ? e.params.arguments?.timeoutMs : null;
++          const responseTimeout = typeof requestedWait === `number` && Number.isFinite(requestedWait)
++            ? Math.max(300000, Math.min(Math.max(0, requestedWait), 3600000) + 30000)
++            : 300000;
++          // Renderer dispatch awaits tool execution, so it needs the full tool wait budget.
++          // Once dispatch starts its outcome is uncertain until acknowledged; never replay on failure.
++          dispatched = !0;
++          if (!(await bounded(() => tools.dispatchToolCall(e), responseTimeout, `dispatch`))) {
++            dispatched = !1;
+             continue;
+-        } catch (e) {
+-          o.e = e;
++          }
++          const result = await bounded(() => response, responseTimeout, `response`);
++          completed = !0;
++          return result;
++        } catch (error) {
++          resources.e = error;
+         } finally {
+-          o.d();
++          resources.d();
+         }
+-      } catch (e) {
+-        (t.throwIfAborted(),
+-          A5.warning(`Failed to query app window tool capabilities`, {
+-            safe: {},
+-            sensitive: { error: e },
+-          }));
+-        continue;
+-      }
+-      let c = this.messageHandler.waitForDynamicAppToolResponse(
+-        e.params.callId,
+-      );
+-      c.catch(() => void 0);
+-      try {
+-        try {
+-          var s = r.Ct();
+-          let n = s.u(await i.services).dynamicAppTools;
+-          if (n == null)
+-            throw Error(`The selected app window no longer supports app tools`);
+-          let a,
+-            o = () => {
+-              a ??=
+-                (this.messageHandler.cancelDynamicAppToolResponse(
+-                  e.params.callId,
+-                ),
+-                n.cancelToolCall(e));
+-            };
+-          t.addEventListener(`abort`, o, { once: !0 });
+-          try {
+-            if (
+-              (t.aborted && o(),
+-              t.throwIfAborted(),
+-              !(await n.dispatchToolCall(e)))
+-            ) {
+-              (t.throwIfAborted(),
+-                this.messageHandler.discardDynamicAppToolResponse(
+-                  e.params.callId,
+-                ));
+-              continue;
+-            }
+-            return (t.throwIfAborted(), await c);
+-          } finally {
+-            (t.removeEventListener(`abort`, o),
+-              await a?.catch((e) => {
+-                A5.warning(`Failed to cancel dynamic app tool call`, {
+-                  safe: {},
+-                  sensitive: { error: e },
+-                });
+-              }));
+-          }
+-        } catch (e) {
+-          s.e = e;
+-        } finally {
+-          s.d();
++      } finally {
++        if (dispatched && !completed) {
++          this.messageHandler.cancelDynamicAppToolResponse(e.params.callId);
++          // Cancellation is best effort: a disconnected renderer cannot acknowledge it.
++          Promise.resolve().then(() => tools?.cancelToolCall(e)).catch((error) => {
++            A5.warning(`Failed to cancel dynamic app tool call`, {
++              safe: {}, sensitive: { error },
++            });
++          });
+         }
+-      } catch (t) {
+-        throw (
+-          this.messageHandler.discardDynamicAppToolResponse(e.params.callId),
+-          t
+-        );
+-      }
+-    }
+-    if (!a) throw Error(`No ready app window supports app tools`);
++        this.messageHandler.discardDynamicAppToolResponse(e.params.callId);
++      }
++    }
++    if (!supported) throw Error(`No ready app window supports app tools`);
+     return null;
+   }
+   async handleMessage(e, t) {

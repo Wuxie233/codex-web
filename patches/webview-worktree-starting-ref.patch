@@ -1,0 +1,34 @@
+--- a/webview/assets/app-initial-236e1501144c.js
++++ b/webview/assets/app-initial-236e1501144c.js
+@@ -292613,7 +292613,8 @@
+       );
+     return { type: `branch`, branchName: s.branch };
+   }
+-  if (a == null) return { type: `branch`, branchName: `main` };
++  if (a == null)
++    throw Error(`Cannot create a worktree because the project is not a Git repository. Use environment type "local".`);
+   let { branch: o } = await jk(`git`).request({
+     method: `default-branch`,
+     params: {
+@@ -292622,7 +292623,20 @@
+       operationSource: `worktree_pending_create`,
+     },
+   });
+-  return { type: `branch`, branchName: o ?? `main` };
++  if (o == null)
++    throw Error(`Cannot create a worktree because the project has no resolvable default branch. Use environment type "local", or create an initial commit first.`);
++  let startingRef = await jk(`git`).request({
++    method: `resolve-worktree-starting-ref`,
++    params: {
++      root: a.root,
++      ref: o,
++      hostConfig: i,
++      operationSource: `worktree_pending_create`,
++    },
++  });
++  if (startingRef == null)
++    throw Error(`Cannot create a worktree because the project's default branch does not resolve to a commit. Use environment type "local".`);
++  return { type: `branch`, branchName: o, remoteRef: startingRef.remoteRef };
+ }
+ async function dRi({
+   scope: e,

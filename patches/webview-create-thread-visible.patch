@@ -1,0 +1,11 @@
+--- a/webview/assets/app-initial-236e1501144c.js
++++ b/webview/assets/app-initial-236e1501144c.js
+@@ -196842,7 +196842,7 @@
+   toolName: r,
+ }) {
+   let i = t == null ? n : oYn({ sourceThreadId: t, input: n });
+-  return Ig(e, `turnToolOutput`)
++  return r !== `create_thread` && Ig(e, `turnToolOutput`)
+     ? { input: [], toolOutput: { name: r, namespace: `codex_app`, output: i } }
+     : { input: [{ type: `text`, text: i, text_elements: [] }] };
+ }
