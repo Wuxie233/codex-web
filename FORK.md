@@ -232,3 +232,24 @@ The route streams regular files as attachments with UTF-8 filenames and uses the
 same deployment authentication boundary as `/@fs/`; keep it behind that boundary.
 Recheck the helper patch when upgrading Desktop bundles. Relevant checks are
 `tests/browser-downloads.test.cjs` and `tests/download.test.cjs`.
+
+### Quota interruption recovery
+
+The account menu's “继续中断任务” action lists terminal `usageLimitExceeded`
+failures and sends an explicit continuation message to selected tasks. Signing in
+never sends messages automatically. The first list request also checks the 100
+most recently updated, unarchived interactive threads for earlier failures.
+
+`src/server/quota-recovery.ts` owns the shared queue, persisted to
+`$CODEX_HOME/codex-web-quota-recovery.json` (default `~/.codex`). The main-process
+patch registers each host connection; browser tabs share one dispatch guard.
+Before sending, it checks archive state, latest failed turn, direct-input support
+and live notifications. The original model and permission settings are inherited.
+These checks are not an atomic server-side lock against a simultaneous manual send.
+
+Unknown delivery results are never retried automatically; refresh reconciles them
+only when the unique client message ID appears in history. A crash during dispatch
+also becomes unknown. A new quota failure pauses the remaining batch when observed.
+The menu and main-process patches must be reapplied on Desktop bundle upgrades.
+Validate with `npm run build:server`, `node --test tests/quota-recovery.test.cjs`
+and `npm run build:browser`.

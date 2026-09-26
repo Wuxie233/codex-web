@@ -1,4 +1,5 @@
 import "./mobile-sidebar-actions";
+import { installQuotaRecovery } from "./quota-recovery";
 import { downloadLocalFile, type LocalFileOpenRequest } from "./downloads";
 import {
   mapBrowserPathToInitialRoute,
@@ -612,6 +613,7 @@ export const ipcRenderer = {
 };
 
 ensureSocket();
+installQuotaRecovery((channel, ...args) => ipcRenderer.invoke(channel, ...args));
 
 export const contextBridge = {
   exposeInMainWorld(_key: string, _api: unknown): void {

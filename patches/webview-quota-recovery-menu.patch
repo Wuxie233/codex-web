@@ -1,0 +1,28 @@
+--- a/webview/assets/app-primary-6b28e06666ff.js
++++ b/webview/assets/app-primary-6b28e06666ff.js
+@@ -128698,7 +128698,11 @@
+     t[33] !== _
+       ? ((k = (0, lY.jsxs)(`div`, {
+           className: `flex w-full min-w-0 flex-col`,
+-          children: [b, x, o, S, _, T, i, D, O],
++          children: [b, x, o, S, _, T, i, D, (0, lY.jsx)(U_, {
++            LeftIcon: Tl,
++            onClick: () => window.dispatchEvent(new Event("codex-quota-recovery-open")),
++            children: (0, lY.jsx)("codex-quota-recovery-label", {}),
++          }), O],
+         })),
+         (t[25] = i),
+         (t[26] = o),
+@@ -129843,7 +129847,11 @@
+   t[217] !== Et
+     ? ((Vt = (0, dY.jsxs)(`div`, {
+         className: `flex w-full min-w-0 flex-col gap-0`,
+-        children: [xt, jt, Ft, null, It, null, Lt, zt, Et, Bt],
++        children: [xt, jt, Ft, null, It, null, Lt, zt, Et, (0, dY.jsx)(U_, {
++            LeftIcon: Tl,
++            onClick: () => window.dispatchEvent(new Event("codex-quota-recovery-open")),
++            children: (0, dY.jsx)("codex-quota-recovery-label", {}),
++          }), Bt],
+       })),
+       (t[210] = xt),
+       (t[211] = jt),

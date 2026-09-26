@@ -20,6 +20,8 @@ import { installModuleAliasHook } from "./module";
 import { glob } from "glob";
 import { rebaseRequestDeadlines } from "./request-deadline";
 import { registerDownloadRoute } from "./download";
+import { QuotaRecovery } from "./quota-recovery";
+import { ipcMain } from "./electron/index";
 
 type ServerOptions = {
   host: string;
@@ -724,6 +726,16 @@ async function startIpcBridgeServer(options: ServerOptions): Promise<void> {
   if (matches.length > 1) {
     throw new Error("multiple main bundles found");
   }
+
+  const recovery = new QuotaRecovery(
+    path.join(
+      process.env.CODEX_HOME || path.join(os.homedir(), ".codex"),
+      "codex-web-quota-recovery.json",
+    ),
+  );
+  Object.assign(globalThis, { __codexQuotaRecovery: recovery });
+  ipcMain.handle("quota-recovery:list", () => recovery.list());
+  ipcMain.handle("quota-recovery:resume", (_event, ids) => recovery.resume(ids));
 
   const module = require(matches[0]!);
   module.runMainAppStartup();

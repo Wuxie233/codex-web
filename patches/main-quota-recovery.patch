@@ -1,0 +1,20 @@
+--- a/.vite/build/main-C5K7o1Hr.js
++++ b/.vite/build/main-C5K7o1Hr.js
+@@ -135776,6 +135776,17 @@
+         getRemoteConnectionMaxRetryAttempts: () =>
+           this.appState.get(n.Sc.REMOTE_CONNECTION_MAX_RETRY_ATTEMPTS) ?? null,
+       });
++    const recovery = globalThis.__codexQuotaRecovery;
++    if (recovery) {
++      recovery.registerHost(e, {
++        readThread: (id) => m.readThread(id, { includeTurns: true }),
++        listThreads: (params) => m.listThreads(params),
++        resumeThread: (id, options) => m.resumeThread(id, options),
++        startTurn: (params, beforeSend) => m.startTurn(params, undefined, beforeSend),
++      });
++      m.registerInternalNotificationHandler((event) => recovery.observe(e, event));
++      m.registerArchiveSuccessHandler((threadId) => recovery.observe(e, { method: "thread/archived", params: { threadId } }));
++    }
+     if (t.id === `local` && this.options.onAppServerSqliteRecovery != null) {
+       let e = this.options.onAppServerSqliteRecovery;
+       m.registerInternalNotificationHandler((t) => {
