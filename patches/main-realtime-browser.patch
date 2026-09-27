@@ -1,0 +1,94 @@
+--- a/.vite/build/main-C5K7o1Hr.js
++++ b/.vite/build/main-C5K7o1Hr.js
+@@ -15219,6 +15219,11 @@
+         this.handlePresented(),
+         this.options.clearPresentation(),
+         n != null && this.publishLaunchState(n, e, t));
++      return (
++        globalThis.__codexElectronIpcBridge?.closeRealtimeWindow?.(
++          this.options.getRendererId(),
++        ) === !0
++      );
+     }
+     registerStarter(e, t, n, r, i) {
+       let a = this.options.getRendererId();
+@@ -15249,7 +15254,7 @@
+       )
+         return;
+       let t = this.starter?.cancelStart;
+-      (this.resetSession(), await t?.());
++      this.resetSession() || (await t?.());
+     }
+     completeSession(e) {
+       this.options.getRendererId() !== e ||
+@@ -15265,6 +15270,24 @@
+         if (r == null || e == null)
+           throw Error(`Main-window voice launches require a launch ID`);
+         a = { launchId: r, origin: e };
++      }
++      if (
++        a != null &&
++        globalThis.__codexElectronIpcBridge?.canAttachRealtimeWindow &&
++        ((this.isSessionReserved() &&
++          this.launch != null &&
++          this.launch.origin.id !== e.id) ||
++          globalThis.__codexElectronIpcBridge.canAttachRealtimeWindow(
++            this.options.getRendererId(),
++            e.id,
++          ) === !1)
++      ) {
++        this.publishLaunchState(
++          a,
++          `failed`,
++          `Voice is already open in another tab`,
++        );
++        return;
+       }
+       let o = a != null && this.launch?.origin.id === a.origin.id,
+         s =
+@@ -15330,7 +15353,7 @@
+       }
+       if (this.starter?.stopSessionIfActive?.() === !0) return;
+       let e = this.starter?.cancelStart;
+-      (this.resetSession(), await e?.());
++      this.resetSession() || (await e?.());
+     }
+     startIfReady() {
+       let e = this.pendingStart,
+@@ -15402,13 +15425,13 @@
+             safe: {},
+             sensitive: { error: n },
+           }),
+-            this.resetSession(`failed`, n.message),
+-            t?.().catch((e) => {
+-              this.logger().error(
+-                `Failed to cancel timed out realtime startup`,
+-                { safe: {}, sensitive: { error: e } },
+-              );
+-            }));
++            this.resetSession(`failed`, n.message) ||
++              t?.().catch((e) => {
++                this.logger().error(
++                  `Failed to cancel timed out realtime startup`,
++                  { safe: {}, sensitive: { error: e } },
++                );
++              }));
+         }, t)));
+     }
+     clearLaunchTimeout() {
+@@ -16546,6 +16569,15 @@
+       this.presentationVisibility ?? (this.startupPresentationVisibility = t);
+       let n = ++this.windowVisibilitySequence,
+         r = await this.ensureWindow(n);
++      if (
++        globalThis.__codexElectronIpcBridge?.attachRealtimeWindow &&
++        !this.realtimeController.isSessionReserved()
++      ) {
++        r?.destroy();
++        return;
++      }
++      if (r != null && n === this.windowVisibilitySequence && e != null)
++        globalThis.__codexElectronIpcBridge?.attachRealtimeWindow?.(r, e.id);
+       r == null ||
+         n !== this.windowVisibilitySequence ||
+         ((this.presentationVisibility ?? this.startupPresentationVisibility) ===

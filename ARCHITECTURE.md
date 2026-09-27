@@ -77,3 +77,26 @@ Quota recovery lists return a bounded snapshot while history discovery continues
 Browser polling passes `refresh: false` through IPC so reading progress does not
 start another scan. Explicit refresh starts discovery; resume rechecks eligibility
 before sending and keeps uncertain delivery results separate from retryable failures.
+
+## Realtime voice renderers
+
+Desktop realtime voice runs in a separate `/avatar-overlay` renderer. The Web
+bridge hosts that renderer in an offscreen iframe owned by the tab that started
+voice. A single-use random token binds its WebSocket to the existing native window;
+renderer IDs are never accepted from the client. Keep IPC directed to each window,
+including during startup, and reject another tab's start while ownership is reserved.
+
+The native runtime still owns WebRTC, voice controls, and app-server requests.
+Cancel, timeout, end, and owner disconnect dispose the child window and IPC ports.
+The browser also closes its peer connections and audio contexts, stops microphone
+tracks, and stops any capture that resolves after disposal. An ended renderer is
+not reused by a later session or another tab.
+
+The Web shim selects Desktop's existing animated Canvas voice renderer. The WebGL
+path can stall the browser event loop long enough to time out voice startup.
+This choice changes only the voice visualization, not its audio transport.
+After upgrading Desktop, revalidate both realtime patches and run
+`node --test tests/realtime-voice.test.cjs tests/realtime-media.test.cjs`.
+Browser checks should use the default autoplay policy and cover microphone denial,
+cancel, end, reentry, tab isolation, and actual inbound/outbound media. Simulated
+microphone tests do not establish physical-device or mobile-browser acceptance.
