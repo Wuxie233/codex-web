@@ -1,0 +1,62 @@
+--- a/webview/assets/app-primary-6b28e06666ff.js
++++ b/webview/assets/app-primary-6b28e06666ff.js
+@@ -399210,7 +399210,7 @@
+     c = (0, A9.useRef)(null),
+     l;
+   t[0] === Symbol.for(`react.memo_cache_sentinel`)
+-    ? ((l = new Set()), (t[0] = l))
++    ? ((l = new Map()), (t[0] = l))
+     : (l = t[0]);
+   let u = (0, A9.useRef)(l),
+     [d, f] = (0, A9.useState)(!1),
+@@ -399219,16 +399219,37 @@
+     ? ((p = () => {
+-        if (u.current.has(r)) return;
++        if (c.current != null && u.current.get(r) === c.current) return;
+         let e = r;
+-        u.current.add(e);
++        let queued = c.current;
++        u.current.set(e, queued);
+         let t = () => {
+-          u.current.delete(e);
++          if (u.current.get(e) === queued) u.current.delete(e);
+         };
+-        i().then(t, t);
++        Promise.resolve().then(i).then(t, (error) => {
++          t();
++          if (c.current === queued) {
++            c.current = null;
++            f(!1);
++            kXr(error);
++          }
++        });
+       }),
+       (t[1] = r),
+       (t[2] = i),
+       (t[3] = p))
+     : (p = t[3]);
++  (0, A9.useEffect)(() => {
++    if (!d) return;
++    let queued = c.current;
++    let timer = setTimeout(() => {
++      if (queued != null && c.current === queued) {
++        c.current = null;
++        if (u.current.get(r) === queued) u.current.delete(r);
++        f(!1);
++        kXr(new Error(`Local configuration timed out; draft kept. Retry sending.`));
++      }
++    }, 20000);
++    return () => clearTimeout(timer);
++  }, [d, a, r]);
+   let m = uD(p),
+     h;
+   t[4] !== o || t[5] !== s
+@@ -399332,7 +399353,7 @@
+     : (f = t[2]);
+   let p;
+   t[3] !== i || t[4] !== a || t[5] !== l
+-    ? ((p = () => yXr(l, a, i).catch(kXr)),
++    ? ((p = () => yXr(l, a, i)),
+       (t[3] = i),
+       (t[4] = a),
+       (t[5] = l),

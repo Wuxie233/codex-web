@@ -74,3 +74,6 @@ patch --batch --forward --strip 1 --directory scratch/asar < patches/webview-aut
 
 patch --batch --forward --strip 1 --directory scratch/asar < patches/main-quota-recovery.patch
 patch --batch --forward --strip 1 --directory scratch/asar < patches/webview-quota-recovery-menu.patch
+
+patch --batch --forward --strip 1 --directory scratch/asar < patches/webview-composer-config-recovery.patch
+patch --batch --forward --strip 1 --directory scratch/asar < patches/webview-fast-mode-loading.patch

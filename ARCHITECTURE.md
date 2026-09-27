@@ -64,3 +64,16 @@ important bits related to wiring up the ipc bridge.
 
 [preload script]: https://www.electronjs.org/docs/latest/tutorial/tutorial-preload
 [`ipcRenderer`]: https://www.electronjs.org/docs/latest/api/ipc-renderer
+
+## Browser configuration readiness
+
+Composer configuration and model eligibility reads must not wait behind background
+catalog work. The Fast-mode loading patch prioritizes those reads while preserving
+server eligibility decisions. The composer recovery patch cancels a queued submit
+on configuration failure or after 20 seconds, retaining the draft for manual retry.
+It does not retry message delivery or replay a canceled submit after a late reply.
+
+Quota recovery lists return a bounded snapshot while history discovery continues.
+Browser polling passes `refresh: false` through IPC so reading progress does not
+start another scan. Explicit refresh starts discovery; resume rechecks eligibility
+before sending and keeps uncertain delivery results separate from retryable failures.

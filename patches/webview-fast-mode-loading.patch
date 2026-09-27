@@ -1,0 +1,20 @@
+--- a/webview/assets/app-initial-236e1501144c.js
++++ b/webview/assets/app-initial-236e1501144c.js
+@@ -182431,7 +182431,7 @@
+ function Ckn({ scope: e, authMethod: t, failClosed: n, hostId: r }) {
+   return {
+     queryKey: Skn({ authMethod: t, failClosed: n, hostId: r }),
+-    queryFn: () => wkn(e, r),
++    queryFn: () => wkn(e, r, { priority: `critical`, timeoutMs: 1e4 }),
+     ...(n ? { retry: !1 } : {}),
+     refetchInterval: pD.FIVE_MINUTES,
+     refetchIntervalInBackground: !0,
+@@ -373791,7 +373791,7 @@
+                 includeHidden: !0,
+                 cursor: null,
+                 limit: o,
+-              })
++              }, { priority: `critical`, timeoutMs: 1e4 })
+             ),
+             select: ({ data: r }) =>
+               EZi({
