@@ -159,6 +159,26 @@ keep their original behavior. This does not change durable or legacy history.
 `node --test tests/thread-history-pagination.test.cjs` exercises the patched
 bundle pagination against long and short histories, including cursor continuation.
 
+### Created tasks in conversation summaries
+
+`patches/webview-created-task-links.patch` restores the summary's created-task
+links from successful native `codex_app.create_thread` receipts using complete
+`thread/turns/list` and `thread/items/list` pagination, independently of the
+50-item transcript preview. The original five-row limit remains. No links are
+inferred from prose, and no extra relationship database is maintained.
+
+The reader belongs to the current conversation route and host manager. It clears
+results and invalidates pending reads on authentication changes or unmount;
+existing in-memory receipts are fenced until durable history confirms access.
+Host IDs are retained for deduplication, status reads and native navigation.
+Queued worktree IDs keep the native client-to-thread mapping. A failed history
+read keeps unverified links hidden; re-entering the route or an authentication
+event retries the read.
+
+Run `node --test tests/created-task-history.test.cjs` for receipt filtering,
+pagination, ordering, auth isolation, lifecycle cleanup and host navigation.
+Rebuild browser assets to update the compressed delivery overlay.
+
 ### Browser event telemetry
 
 `patches/webview-disable-event-telemetry.patch` disables Statsig event logging
