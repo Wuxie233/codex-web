@@ -1,0 +1,246 @@
+--- a/webview/assets/local-conversation-thread-9a0a61c5e076.js
++++ b/webview/assets/local-conversation-thread-9a0a61c5e076.js
+@@ -6028,6 +6028,124 @@
+   sx = e(() => {
+     ((ax = Y()), $l(), wi(), Gu(), Yr(), wd(), Wb(), rx(), wf(), (ox = X()));
+   });
++// Read creation receipts independently of the transcript's preview window.
++function createdTaskFromCall(call, hostId) {
++  if (call?.type !== `dynamicToolCall` || call.namespace !== `codex_app` ||
++      call.tool !== `create_thread` || call.status !== `completed` || call.success !== true)
++    return null;
++  let text = call.contentItems?.find((item) => item.type === `inputText`)?.text;
++  if (text == null) return null;
++  let receipt;
++  try { receipt = JSON.parse(text); } catch { return null; }
++  // The native ID schema strips status/error fields; check the envelope first.
++  if (receipt == null || typeof receipt !== `object` || Array.isArray(receipt) ||
++      receipt.success === false || receipt.error != null ||
++      [`unknown`, `outcome-unknown`, `failed`, `rejected`, `error`, `cancelled`, `canceled`].includes(receipt.status))
++    return null;
++  let result = ua(text);
++  if (result == null) return null;
++  let id = `clientThreadId` in result ? result.clientThreadId : result.threadId;
++  if (result.kind === `chatgpt`) return { id, kind: `chatgpt` };
++  let target = call.arguments?.target?.environment?.type;
++  return {
++    id: `clientThreadId` in result ? id : v(id),
++    kind: `codex`,
++    hostId: result.hostId ?? hostId,
++    target: target === `local` || target === `worktree` ? target : `projectless`,
++    title: typeof call.arguments?.title === `string` ? call.arguments.title : null,
++  };
++}
++function mergeCreatedTasks(liveCalls, history, hostId, blockedLiveTasks = []) {
++  let tasks = new Map(), historical = new Map(history.map(task => [ux(task), task])),
++    blocked = new Set(blockedLiveTasks);
++  for (let calls of Object.values(liveCalls ?? {}).reverse())
++    for (let i = calls.length - 1; i >= 0; --i) {
++      let task = createdTaskFromCall(calls[i], hostId);
++      if (task == null) continue;
++      let key = ux(task);
++      if (historical.has(key)) historical.set(key, task);
++      else if (!blocked.has(key) && !tasks.has(key)) tasks.set(key, task);
++    }
++  for (let [key, task] of historical)
++    if (!tasks.has(key)) tasks.set(key, task);
++  return Array.from(tasks.values()).slice(0, vx);
++}
++async function loadCreatedTaskHistory(manager, threadId, isCurrent) {
++  let tasks = new Map(), turnCursor = null, turnCursors = new Set();
++  do {
++    if (!isCurrent()) return [];
++    if (turnCursors.has(turnCursor)) throw Error(`Created task history repeated turn cursor`);
++    turnCursors.add(turnCursor);
++    let turns = await manager.sendRequest(`thread/turns/list`, {
++      threadId, cursor: turnCursor, limit: 100, itemsView: `notLoaded`, sortDirection: `desc`,
++    }, { priority: `background`, source: `tail_history` });
++    for (let turn of turns.data) {
++      let itemCursor = null, itemCursors = new Set();
++      do {
++        if (!isCurrent()) return [];
++        if (itemCursors.has(itemCursor)) throw Error(`Created task history repeated item cursor`);
++        itemCursors.add(itemCursor);
++        let items = await manager.sendRequest(`thread/items/list`, {
++          threadId, turnId: turn.id, cursor: itemCursor, limit: 100, sortDirection: `desc`,
++        }, { priority: `background`, source: `tail_history` });
++        for (let entry of items.data) {
++          if (entry.turnId !== turn.id) throw Error(`Created task history returned unexpected turn`);
++          let task = createdTaskFromCall(entry.item, manager.getHostId());
++          if (task != null && !tasks.has(ux(task))) tasks.set(ux(task), task);
++        }
++        itemCursor = items.nextCursor;
++      } while (itemCursor != null);
++    }
++    turnCursor = turns.nextCursor;
++  } while (turnCursor != null);
++  return Array.from(tasks.values());
++}
++function watchCreatedTaskHistory(manager, threadId, publish, readLiveCalls = () => ({})) {
++  let disposed = false, generation = 0, blockedLiveTasks = [], validatingAuth = true;
++  let emit = (tasks, enabled) => publish({ tasks, enabled, blockedLiveTasks });
++  let refresh = () => {
++    let current = ++generation;
++    emit([], !validatingAuth);
++    loadCreatedTaskHistory(manager, threadId, () => !disposed && current === generation)
++      .then((tasks) => {
++        if (!disposed && current === generation) {
++          validatingAuth = false;
++          emit(tasks, true);
++        }
++      })
++      .catch(() => {});
++  };
++  let fence = () => {
++    ++generation;
++    validatingAuth = true;
++    // The native conversation index survives auth changes. Fence its old receipts.
++    blockedLiveTasks = Array.from(new Set(Object.values(readLiveCalls() ?? {})
++      .flat().map(call => createdTaskFromCall(call, manager.getHostId()))
++      .filter(task => task != null).map(ux)));
++    emit([], false);
++  };
++  let onAuth = ({ authMethod }) => {
++    fence();
++    if (authMethod != null) refresh();
++  };
++  manager.addAuthStatusCallback(onAuth);
++  // Auth may have changed while this route was unmounted.
++  fence();
++  refresh();
++  return () => {
++    disposed = true;
++    ++generation;
++    manager.removeAuthStatusCallback(onAuth);
++    emit([], false);
++  };
++}
++function openCreatedTask(task, route, scope) {
++  if (task.kind === `codex` && task.hostId != null) {
++    let resolvedId = scope.get(Te, task.id) ?? scope.get(pt, task.id);
++    if (resolvedId != null) ms(scope, v(resolvedId), task.hostId);
++  }
++  kr.dispatchHostMessage({ type: `navigate-to-route`, path: route });
++}
+ function cx(e) {
+   let t = (0, px.c)(8),
+     n = no(yx);
+@@ -6073,20 +6191,22 @@
+   return (0, gx.jsx)(dx, { task: e });
+ }
+ function ux(e) {
+-  return `${e.kind}:${e.id}`;
++  return `${e.kind}:${e.hostId ?? ``}:${e.id}`;
+ }
+ function dx(e) {
+-  let t = (0, px.c)(16),
++  let t = (0, px.c)(18),
+     { task: n } = e,
+     { route: r, status: i, title: a } = Z(bx, n),
+     o = _x[n.kind === `chatgpt` ? `chatgpt` : n.target],
++    scope = Ml(Cc),
+     s;
+-  t[0] === r
++  t[0] === r && t[16] === scope && t[17] === n
+     ? (s = t[1])
+-    : ((s = () =>
+-        kr.dispatchHostMessage({ type: `navigate-to-route`, path: r })),
++    : ((s = () => openCreatedTask(n, r, scope)),
+       (t[0] = r),
+-      (t[1] = s));
++      (t[1] = s),
++      (t[16] = scope),
++      (t[17] = n));
+   let c = i === `done` ? `muted` : `default`,
+     l;
+   t[2] === o
+@@ -6207,6 +6327,7 @@
+   _x,
+   vx,
+   yx,
++  createdTaskHistory,
+   bx,
+   xx = e(() => {
+     ((px = Y()),
+@@ -6234,46 +6355,26 @@
+       (gx = X()),
+       (_x = { chatgpt: pp, local: Qf, projectless: B, worktree: Xt }),
+       (vx = 5),
++      (createdTaskHistory = Nd(Cc, { tasks: [], enabled: false }, {
++        onMount: (publish, scope) => scope.watch(({ get }) => {
++          if (scope.value.routeKind !== `local-thread`) return;
++          let threadId = scope.value.conversationId,
++            manager = get(Io, threadId);
++          publish({ tasks: [], enabled: false });
++          if (manager == null) return;
++          return watchCreatedTaskHistory(manager, threadId, publish, () =>
++            scope.get(qo, { hostId: manager.getHostId(), threadId }));
++        }),
++      })),
+       (yx = yn(
+         Cc,
+         ({ get: e, scope: t }) => {
+           if (t.value.routeKind !== `local-thread`) return [];
+           let n = t.value.conversationId,
+-            r = e(qo, { hostId: e(mu, n), threadId: n }),
+-            i = new Map();
+-          for (let e of Object.values(r ?? {}).reverse())
+-            for (let t = e.length - 1; t >= 0; --t) {
+-              let n = e[t];
+-              if (
+-                n?.type !== `dynamicToolCall` ||
+-                n.status !== `completed` ||
+-                n.success !== !0
+-              )
+-                continue;
+-              let r = n.contentItems?.find((e) => e.type === `inputText`)?.text,
+-                a = r == null ? null : ua(r);
+-              if (a == null) continue;
+-              let o = (0, mx.default)(n.arguments, `target.environment.type`),
+-                s =
+-                  a.kind === `chatgpt`
+-                    ? {
+-                        id:
+-                          `clientThreadId` in a ? a.clientThreadId : a.threadId,
+-                        kind: `chatgpt`,
+-                      }
+-                    : {
+-                        id:
+-                          `clientThreadId` in a
+-                            ? a.clientThreadId
+-                            : v(a.threadId),
+-                        kind: `codex`,
+-                        target:
+-                          o === `local` || o === `worktree` ? o : `projectless`,
+-                      };
+-              if ((i.set(`${s.kind}:${s.id}`, s), i.size === vx))
+-                return Array.from(i.values());
+-            }
+-          return Array.from(i.values());
++            hostId = e(mu, n),
++            history = e(createdTaskHistory),
++            calls = e(qo, { hostId, threadId: n });
++          return history.enabled ? mergeCreatedTasks(calls, history.tasks, hostId, history.blockedLiveTasks) : [];
+         },
+         { isEqual: hx.default },
+       )),
+@@ -6297,9 +6398,9 @@
+           let n = t(Te, e.id) ?? t(pt, e.id),
+             r = n == null ? null : v(n);
+           if (r == null)
+-            return { route: pe(e.id), status: `starting`, title: null };
++            return { route: pe(e.id), status: `starting`, title: e.title ?? null };
+           let i = t(Rt) ? t(hr, r) : null,
+-            a = i?.hostId ?? t(mu, r),
++            a = e.hostId ?? i?.hostId ?? t(mu, r),
+             o = t(Nn, { hostId: a, threadId: r }),
+             s = t(Kn, { conversationId: r, hostId: a }),
+             c =
+@@ -6324,6 +6425,7 @@
+                 s?.title ??
+                 s?.generatedTitle ??
+                 i?.displayTitle ??
++                e.title ??
+                 null,
+             }
+           );
