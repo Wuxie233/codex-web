@@ -19,6 +19,8 @@ import fastifyStatic from "@fastify/static";
 import { installModuleAliasHook } from "./module";
 import { glob } from "glob";
 import { rebaseRequestDeadlines } from "./request-deadline";
+import { isIsolatedBrowserRequest, isUserAppNavigation } from "./browser-isolation";
+import { registerBrowserPreviewRoutes } from "./browser-preview";
 import { registerDownloadRoute } from "./download";
 import { QuotaRecovery } from "./quota-recovery";
 import { ipcMain } from "./electron/index";
@@ -417,6 +419,20 @@ function ensureElectronLikeProcessContext(): void {
 async function startIpcBridgeServer(options: ServerOptions): Promise<void> {
   const bridgeState = getIpcMainBridgeState();
   const app = Fastify({ logger: false });
+  app.addHook("onRequest", async (request, reply) => {
+    if (
+      isIsolatedBrowserRequest(request.headers) &&
+      !isUserAppNavigation(request.method, request.url, request.headers) &&
+      !(request.method === "GET" || request.method === "HEAD"
+        ? request.url.startsWith("/__backend/browser-preview/")
+        : false)
+    ) {
+      return reply
+        .code(403)
+        .send({ error: "Isolated previews cannot access the application" });
+    }
+  });
+  registerBrowserPreviewRoutes(app);
   registerDownloadRoute(app);
   const websocketServer = new WebSocketServer({ noServer: true });
 
@@ -460,6 +476,13 @@ async function startIpcBridgeServer(options: ServerOptions): Promise<void> {
     root: "/",
     prefix: "/@fs/",
     decorateReply: false,
+    setHeaders(response, filePath) {
+      if (/\.html?$/i.test(filePath))
+        response.setHeader(
+          "Content-Security-Policy",
+          "sandbox allow-scripts; connect-src 'none'; form-action 'none'",
+        );
+    },
   });
 
   await app.register(fastifyStatic, {
@@ -487,6 +510,10 @@ async function startIpcBridgeServer(options: ServerOptions): Promise<void> {
   });
 
   app.server.on("upgrade", (request, socket, head) => {
+    if (isIsolatedBrowserRequest(request.headers)) {
+      socket.destroy();
+      return;
+    }
     const requestUrl = request.url ?? "/";
     const host = request.headers.host ?? "localhost";
     const url = new URL(requestUrl, `http://${host}`);

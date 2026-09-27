@@ -31,16 +31,20 @@ export default defineConfig({
     proxy: {
       "/__backend/ipc": {
         target: `ws://127.0.0.1:8214`,
-        changeOrigin: true,
+        changeOrigin: false,
         ws: true,
+      },
+      "/__backend/browser-preview": {
+        target: `http://127.0.0.1:8214`,
+        changeOrigin: false,
       },
       "/__backend/download": {
         target: `http://127.0.0.1:8214`,
-        changeOrigin: true,
+        changeOrigin: false,
       },
       "/__backend/upload": {
         target: `http://127.0.0.1:8214`,
-        changeOrigin: true,
+        changeOrigin: false,
       },
     },
   },

@@ -278,3 +278,39 @@ The menu and main-process patches must be reapplied on Desktop bundle upgrades.
 Validate with `npm run build:server`,
 `node --test tests/quota-recovery.test.cjs tests/quota-account-hook.test.cjs tests/rate-limit-recovery.test.cjs`
 and `npm run build:browser`.
+
+## Embedded web and HTML viewing
+
+Ordinary HTTP(S) links open a Web-owned browser dialog. Its address field,
+back/forward history and reload control navigate panel-requested pages; explicit
+external-browser and modified/new-tab actions retain browser tab behavior.
+Websites can reject embedding with CSP/X-Frame-Options, and sandboxed sites may
+need the always-visible external-open action for login or other capabilities.
+An iframe load event does not prove that a third-party page rendered. Navigation
+inside cross-origin frames cannot reliably update the panel address/history.
+The panel is not a complete browser replacement and does not embed Codex itself.
+
+Local `.html`/`.htm` links without line references open an isolated HTML preview.
+The initial file retains native source viewing and the existing download route.
+A short-lived capability serves only its canonical directory, including relative
+styles, scripts, images and linked HTML pages. Symlinks outside that directory
+are rejected. Script-driven navigation is not reflected in the dialog history;
+normal HTML links are. Network calls, remote resources, forms and nested frames
+are disabled in local previews. Generated attachments without an HTML extension
+keep their existing file behavior.
+
+Preview responses and iframes use sandboxing without same-origin permission.
+Cross-site/opaque-origin requests cannot reach application routes or the IPC
+WebSocket, and raw `/@fs/` HTML responses are sandboxed too. Intentional top-level
+GET navigation to the app root or thread pages remains available from external
+links; filesystem and API routes receive no such exception. Vite proxies retain
+the browser Host so same-origin validation works in development.
+This does not provide Desktop's Electron
+browser surface, browser-use automation, a remote-site proxy or embedding-policy
+bypass. `upstream/browser-use` implements a different native browser integration
+and is not required by this path.
+
+Checks: `npm run build:server`, `node --test tests/browser-preview.test.cjs
+tests/browser-isolation.test.cjs tests/browser-link-routing.test.cjs
+tests/download.test.cjs`, and the actual-browser check
+`tests/browser/native-browser-disabled.cjs` after `npm run build:browser`.

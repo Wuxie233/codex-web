@@ -1,0 +1,18 @@
+--- a/webview/assets/app-initial-236e1501144c.js
++++ b/webview/assets/app-initial-236e1501144c.js
+@@ -292974,6 +292974,7 @@
+   jRi(e).catch(() => void 0);
+ }
+ async function jRi(e) {
++  if (window.__ELECTRON_SHIM__?.openLocalHtml?.(e)) return { success: true };
+   if (window.__ELECTRON_SHIM__?.downloadLocalFile?.(e)) return { success: true };
+   return lx(iX.openIn.open(e));
+ }
+@@ -404218,6 +404219,7 @@
+ }
+ function rSo(e, t, n = {}) {
+   if (e.get(Rj)) return null;
++  if (!n.webViewSource && n.line == null && n.endLine == null && window.__ELECTRON_SHIM__?.openLocalHtml?.({ path: t, hostId: n.hostId, onViewSource: (path = t) => rSo(e, path, { ...n, webViewSource: true }) })) return { placement: n.target ?? `right`, status: `opened`, viewer: `htmlPreview` };
+   let {
+       activatePresentationAnnotationOnboarding: r,
+       artifactNavigationTarget: i,

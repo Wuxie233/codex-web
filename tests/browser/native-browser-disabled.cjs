@@ -28,7 +28,12 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || "playwright");
     const forwardedLinks = [];
     page.on("websocket", (socket) => {
       socket.on("framesent", ({ payload }) => {
-        const message = JSON.parse(String(payload));
+        let message;
+        try {
+          message = JSON.parse(String(payload));
+        } catch {
+          return;
+        }
         if (message.args?.[0]?.type === "open-in-browser")
           forwardedLinks.push(message.args[0]);
       });
@@ -41,6 +46,9 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || "playwright");
     await page
       .locator("[data-app-shell-sidebar-trigger]")
       .waitFor({ timeout: 60000 });
+    const sidebarToggle = page.locator("[data-app-shell-sidebar-trigger]");
+    if ((await sidebarToggle.getAttribute("aria-expanded")) === "false")
+      await sidebarToggle.click();
     await page
       .getByRole("button", { name: process.env.TEST_THREAD_NAME, exact: true })
       .click();
@@ -68,7 +76,10 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || "playwright");
     // Exercise the real preload IPC bridge under user activation, without relying
     // on third-party site availability or changing the conversation contents.
     await context.route("https://example.com/", (route) =>
-      route.fulfill({ body: "external-link fixture" }),
+      route.fulfill({
+        contentType: "text/html",
+        body: "<h1>Embedded page fixture</h1>",
+      }),
     );
     let popups = 0;
     page.on("popup", () => popups++);
@@ -90,6 +101,29 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || "playwright");
           url: "https://example.com/",
         });
       document.body.append(button);
+    });
+    await page.locator("#external-browser-test").click();
+    const embedded = page.getByRole("dialog", { name: "浏览器", exact: true });
+    await embedded.waitFor();
+    await page
+      .frameLocator('iframe[title="网页预览"]')
+      .getByRole("heading", { name: "Embedded page fixture" })
+      .waitFor();
+    assert.equal(popups, 0, "default intent must open the embedded browser");
+    assert.equal(
+      await embedded.getByRole("textbox", { name: "网页地址" }).inputValue(),
+      "https://example.com/",
+    );
+    await embedded.getByRole("button", { name: "关闭", exact: true }).click();
+    await embedded.waitFor({ state: "detached" });
+    await page.evaluate(() => {
+      document.querySelector("#external-browser-test").onclick = () =>
+        window.electronBridge.sendMessageFromView({
+          type: "open-in-browser",
+          initiator: "markdown_link_click",
+          openTargetIntent: "external",
+          url: "https://example.com/",
+        });
     });
     const popupPromise = page.waitForEvent("popup");
     await page.locator("#external-browser-test").click();
@@ -114,7 +148,7 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || "playwright");
       document.querySelector("#external-browser-test").remove(),
     );
     console.log(
-      "PASS: native launcher absent, no restored native surface, external tab opens once without native IPC, original UI remains interactive, no page errors",
+      "PASS: native launcher absent, default link renders embedded, explicit external intent opens once without native IPC, original UI remains interactive, no page errors",
     );
   } finally {
     await browser.close();

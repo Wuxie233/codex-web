@@ -1,3 +1,8 @@
+import {
+  openBrowserUrl,
+  openLocalHtml,
+  type HtmlPreviewRequest,
+} from "./browser-panel";
 import "./mobile-sidebar-actions";
 import { installQuotaRecovery } from "./quota-recovery";
 import { downloadLocalFile, type LocalFileOpenRequest } from "./downloads";
@@ -111,6 +116,7 @@ type StatsigGateEvaluation = {
 };
 
 type ElectronShimState = {
+  openLocalHtml?: (request: HtmlPreviewRequest) => boolean;
   downloadLocalFile?: (request: LocalFileOpenRequest) => boolean;
   initialRoute?: string;
   initialSidebarState?: boolean;
@@ -344,6 +350,10 @@ function isUnhandledAddWorkspaceRootOptionMessage(value: unknown): value is {
 function isOpenInBrowserMessage(value: unknown): value is {
   type: "open-in-browser";
   url: string;
+  useExternalBrowser?: boolean;
+  openTargetIntent?: string;
+  openTarget?: string;
+  disposition?: string;
 } {
   return (
     isRecord(value) &&
@@ -372,6 +382,7 @@ const mobileMediaQuery = matchMedia("(max-width: 768px)");
 const initialSidebarState = !mobileMediaQuery.matches;
 const electronShim = (window.__ELECTRON_SHIM__ ??= {});
 electronShim.downloadLocalFile = downloadLocalFile;
+electronShim.openLocalHtml = openLocalHtml;
 const buildFlavor: "prod" | "dev" | "agent" | string = "prod";
 
 Object.assign(globalThis, {
@@ -447,7 +458,15 @@ export const ipcRenderer = {
   invoke(channel: string, ...args: unknown[]): Promise<unknown> {
     if (channel === "codex_desktop:message-from-view" && args.length === 1) {
       if (isOpenInBrowserMessage(args[0])) {
-        window.open(args[0].url, "_blank", "noopener,noreferrer");
+        const message = args[0];
+        const external =
+          message.useExternalBrowser === true ||
+          message.openTargetIntent === "external" ||
+          message.openTarget === "external-browser" ||
+          message.disposition === "new-tab" ||
+          message.disposition === "new-background-tab";
+        if (external || !openBrowserUrl(message.url))
+          window.open(message.url, "_blank", "noopener,noreferrer");
         // The client owns web links; forwarding them also invokes Desktop's
         // unsupported native browser routing, even when its UI is disabled.
         if (/^https?:\/\//i.test(args[0].url)) return Promise.resolve();

@@ -40,7 +40,7 @@ export function downloadLocalFile(request: LocalFileOpenRequest): boolean {
   return true;
 }
 
-async function fetchDownload(path: string): Promise<void> {
+export async function fetchDownload(path: string): Promise<void> {
   // Fetch in the authenticated page context. Browser download managers may
   // start a separate unauthenticated request when given this endpoint directly.
   const response = await fetch(`/__backend/download?${new URLSearchParams({ path })}`, {
