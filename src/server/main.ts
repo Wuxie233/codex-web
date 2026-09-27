@@ -734,7 +734,12 @@ async function startIpcBridgeServer(options: ServerOptions): Promise<void> {
     ),
   );
   Object.assign(globalThis, { __codexQuotaRecovery: recovery });
-  ipcMain.handle("quota-recovery:list", () => recovery.list());
+  ipcMain.handle("quota-recovery:list", (_event, options) =>
+    recovery.list(
+      !(options !== null && typeof options === "object" &&
+        "refresh" in options && options.refresh === false),
+    ),
+  );
   ipcMain.handle("quota-recovery:resume", (_event, ids) => recovery.resume(ids));
 
   const module = require(matches[0]!);

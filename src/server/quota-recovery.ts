@@ -82,6 +82,7 @@ export class QuotaRecovery {
   private busy = false;
   private discovered = new Set<string>();
   private scanning: Promise<void> | undefined;
+  private scanError: string | undefined;
   constructor(private file: string) {
     try {
       const data: Entry[] = JSON.parse(readFileSync(file, "utf8"));
@@ -192,14 +193,23 @@ export class QuotaRecovery {
         .sort((a, b) => b.interruptedAt - a.interruptedAt)
         .map((e) => ({ ...e })),
       busy: this.busy,
+      scanning: !!this.scanning,
+      scanError: this.scanError,
     };
   }
-  async list() {
-    if (!this.scanning && !this.busy)
-      this.scanning = this.discover().finally(() => {
-        this.scanning = undefined;
-      });
-    if (this.scanning) await this.scanning;
+  async list(refresh = true) {
+    if (refresh && !this.scanning && !this.busy) {
+      this.scanError = undefined;
+      this.scanning = this.discover()
+        .catch(() => {
+          this.scanError = "部分任务暂时无法读取，请检查连接后刷新。";
+        })
+        .finally(() => {
+          this.scanning = undefined;
+        });
+    }
+    // Return available records promptly while history discovery continues.
+    if (this.scanning) await bounded(this.scanning, 1000).catch(() => {});
     return this.snapshot();
   }
   private async discover() {
@@ -214,7 +224,11 @@ export class QuotaRecovery {
           sortDirection: "desc",
           modelProviders: [],
         }),
-      );
+      ).catch(() => null);
+      if (!page) {
+        this.scanError = "部分任务暂时无法读取，请检查连接后刷新。";
+        continue;
+      }
       const candidates = [...page.data];
       let incomplete = false;
       await Promise.all(
@@ -243,7 +257,10 @@ export class QuotaRecovery {
           }
         }),
       );
-      if (incomplete || candidates.length) continue;
+      if (incomplete || candidates.length) {
+        this.scanError = "部分任务暂时无法读取，请检查连接后刷新。";
+        continue;
+      }
       this.discovered.add(host);
     }
     // Update titles and reconcile uncertain sends by their unique client message id.

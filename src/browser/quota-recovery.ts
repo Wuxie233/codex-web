@@ -8,7 +8,12 @@ type RecoveryEntry = {
   status: "pending" | "sending" | "resumed" | "skipped" | "failed" | "unknown";
   detail?: string;
 };
-type RecoverySnapshot = { entries: RecoveryEntry[]; busy: boolean };
+type RecoverySnapshot = {
+  entries: RecoveryEntry[];
+  busy: boolean;
+  scanning?: boolean;
+  scanError?: string;
+};
 type Invoke = (channel: string, ...args: unknown[]) => Promise<unknown>;
 
 const statusLabels: Record<RecoveryEntry["status"], string> = {
@@ -75,11 +80,12 @@ export function installQuotaRecovery(invoke: Invoke): void {
     clearTimeout(poll);
     if (
       dialog?.open &&
-      (snapshot.busy ||
+      (snapshot.scanning ||
+        snapshot.busy ||
         snapshot.entries.some((entry) => entry.status === "sending"))
     ) {
       poll = setTimeout(() => {
-        void load();
+        void load(true);
       }, 2000);
     }
   }
@@ -96,6 +102,8 @@ export function installQuotaRecovery(invoke: Invoke): void {
       .filter(Boolean);
     notice.textContent =
       error ||
+      snapshot.scanError ||
+      (snapshot.scanning ? "正在检查中断任务，已找到的任务会陆续显示…" : "") ||
       (loading && !known
         ? "正在读取中断任务…"
         : totals.join("，") || "没有因额度不足中断的任务。");
@@ -153,7 +161,7 @@ export function installQuotaRecovery(invoke: Invoke): void {
         ? "正在继续…"
         : `继续选中任务${selected.size ? ` · ${selected.size}` : ""}`;
   }
-  function load(): Promise<void> {
+  function load(pollOnly = false): Promise<void> {
     if (listRequest) return listRequest;
     // A pre-send list response must never replace the newer send result.
     if (submitting) return Promise.resolve();
@@ -161,7 +169,7 @@ export function installQuotaRecovery(invoke: Invoke): void {
     render();
     listRequest = (async () => {
       try {
-        apply(await invoke("quota-recovery:list"));
+        apply(await invoke("quota-recovery:list", { refresh: !pollOnly }));
         uncertain = false;
         error = "";
       } catch {

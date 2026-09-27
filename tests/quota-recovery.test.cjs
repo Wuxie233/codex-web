@@ -255,3 +255,56 @@ test("timed out transport preparation cannot dispatch after the request expires"
   assert.throws(() => lateBeforeSend(), /已变化|超时|失效|结束/);
   assert.equal(f.recovery.snapshot().entries[0].status, "failed");
 });
+
+test("slow history reads return a scanning snapshot without blocking available tasks", async (t) => {
+  const f = fixture(t);
+  f.fail();
+  let release;
+  const original = f.adapter.listThreads;
+  f.adapter.listThreads = () =>
+    new Promise((resolve) => {
+      release = resolve;
+    });
+  const realSetTimeout = global.setTimeout;
+  t.mock.method(global, "setTimeout", (callback, delay, ...args) =>
+    realSetTimeout(callback, delay === 1000 ? 5 : delay, ...args),
+  );
+  const result = await f.recovery.list();
+  assert.equal(result.scanning, true);
+  assert.equal(result.entries.length, 1);
+  release(await original({ archived: false }));
+  await f.recovery.list();
+  assert.equal(f.recovery.snapshot().scanning, false);
+});
+test("unavailable host does not hide known records or another host's failures", async (t) => {
+  const f = fixture(t);
+  f.fail();
+  f.adapter.listThreads = async () => {
+    throw Error("host disconnected");
+  };
+  const thread = {
+    id: "remote",
+    turns: [{ id: "remote-fail", status: "failed", error: quota }],
+  };
+  f.recovery.registerHost("remote", {
+    ...f.adapter,
+    listThreads: async () => ({ data: [thread] }),
+    readThread: async () => thread,
+  });
+  const result = await f.recovery.list();
+  assert.equal(result.entries.length, 2);
+  assert.equal(result.scanning, false);
+  assert.match(result.scanError, /部分任务/);
+});
+
+test("poll reads the completed snapshot without restarting history scans", async (t) => {
+  const f = fixture(t);
+  let reads = 0;
+  const original = f.adapter.listThreads;
+  f.adapter.listThreads = async (params) => { reads++; return original(params); };
+  await f.recovery.list();
+  await f.recovery.list(false);
+  await f.recovery.list(false);
+  assert.equal(reads, 1);
+  assert.equal(f.recovery.snapshot().scanning, false);
+});
