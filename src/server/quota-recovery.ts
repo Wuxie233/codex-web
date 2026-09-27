@@ -11,6 +11,13 @@ type Status =
   | "skipped"
   | "failed"
   | "unknown";
+type Principal = { accountId: string; userId: string } | null;
+type AutoAttempt = {
+  host: string;
+  generation: number;
+  quotaRevision: number;
+  attempted: Set<string>;
+};
 export type Entry = {
   id: string;
   hostId: string;
@@ -92,7 +99,22 @@ export class QuotaRecovery {
   private discovered = new Set<string>();
   private scanning: Promise<void> | undefined;
   private scanError: string | undefined;
+  private autoResumeOnAccountSwitch = false;
+  private accounts = new Map<string, string>();
+  private accountGenerations = new Map<string, number>();
+  private autoQueue = new Map<string, AutoAttempt>();
+  private autoRunning: Promise<void> | undefined;
+  private idleWaiters = new Set<() => void>();
   constructor(private file: string) {
+    try {
+      const settings = JSON.parse(
+        readFileSync(file + ".settings.json", "utf8"),
+      );
+      this.autoResumeOnAccountSwitch =
+        settings.autoResumeOnAccountSwitch === true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
     try {
       const data: Entry[] = JSON.parse(readFileSync(file, "utf8"));
       for (const entry of data) {
@@ -110,6 +132,125 @@ export class QuotaRecovery {
   }
   registerHost(host: string, adapter: Adapter) {
     this.hosts.set(host, adapter);
+  }
+  setAutoResume(value: unknown) {
+    this.setPreference(value);
+    if (!value) {
+      this.autoQueue.clear();
+      for (const [host, generation] of this.accountGenerations)
+        this.accountGenerations.set(host, generation + 1);
+    }
+    return this.visibleSnapshot();
+  }
+  private setPreference(value: unknown) {
+    if (typeof value !== "boolean") throw Error("无效的自动继续设置");
+    const settings = {
+      autoResumeOnAccountSwitch: value,
+    };
+    const file = this.file + ".settings.json";
+    mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
+    writeFileSync(file + ".tmp", JSON.stringify(settings), { mode: 0o600 });
+    renameSync(file + ".tmp", file);
+    this.autoResumeOnAccountSwitch = value;
+  }
+  // Called only after the connection has read its usable authenticated principal.
+  // Token refreshes and initial connection are baselines, not account switches.
+  accountChanged(host: string, principal: Principal) {
+    if (!principal) {
+      this.accountGenerations.set(
+        host,
+        (this.accountGenerations.get(host) ?? 0) + 1,
+      );
+      this.autoQueue.delete(host);
+      return this.autoRunning ?? Promise.resolve();
+    }
+    const identity = JSON.stringify([principal.accountId, principal.userId]);
+    const previous = this.accounts.get(host);
+    this.accounts.set(host, identity);
+    if (!previous || previous === identity)
+      return this.autoRunning ?? Promise.resolve();
+    const generation = (this.accountGenerations.get(host) ?? 0) + 1;
+    this.accountGenerations.set(host, generation);
+    if (this.autoResumeOnAccountSwitch) {
+      this.autoQueue.set(host, {
+        host,
+        generation,
+        quotaRevision: this.quotaRevision,
+        attempted: new Set(),
+      });
+      this.autoRunning ??= Promise.resolve()
+        .then(() => this.drainAutoQueue())
+        .finally(() => {
+          this.autoRunning = undefined;
+        });
+    }
+    return this.autoRunning ?? Promise.resolve();
+  }
+  private autoAllowed(attempt: AutoAttempt) {
+    return (
+      this.autoResumeOnAccountSwitch &&
+      this.accountGenerations.get(attempt.host) === attempt.generation &&
+      this.quotaRevision === attempt.quotaRevision
+    );
+  }
+  private async waitUntilIdle() {
+    while (this.busy || this.scanning) {
+      if (this.busy)
+        await new Promise<void>((resolve) => this.idleWaiters.add(resolve));
+      if (this.scanning) await this.scanning;
+    }
+  }
+  private async drainAutoQueue() {
+    while (this.autoQueue.size) {
+      const [host, attempt] = this.autoQueue.entries().next().value!;
+      this.autoQueue.delete(host);
+      try {
+        await this.waitUntilIdle();
+        if (!this.autoAllowed(attempt)) continue;
+        // Known failures can resume immediately; unopened history follows one page at a time.
+        await this.resumeAutomatic(attempt);
+        let cursor: string | null = null;
+        const seen = new Set<string>();
+        do {
+          await this.waitUntilIdle();
+          if (!this.autoAllowed(attempt)) break;
+          const adapter = this.hosts.get(host);
+          if (!adapter) break;
+          let next: string | null = null;
+          this.scanning = (async () => {
+            const page = await bounded(
+              adapter.listThreads(this.historyParams(cursor)),
+            );
+            next = page.nextCursor ?? null;
+            await this.discoverCandidates(host, adapter, page.data, () =>
+              this.autoAllowed(attempt),
+            );
+            await this.resolveEntries();
+          })().finally(() => {
+            this.scanning = undefined;
+          });
+          await this.scanning;
+          await this.resumeAutomatic(attempt);
+          cursor = next;
+          if (cursor && seen.has(cursor)) throw Error("重复的历史分页游标");
+          if (cursor) seen.add(cursor);
+        } while (cursor);
+      } catch {
+        this.scanError = "部分任务暂时无法读取，请检查连接后刷新。";
+      }
+    }
+  }
+  private async resumeAutomatic(attempt: AutoAttempt) {
+    await this.waitUntilIdle();
+    if (!this.autoAllowed(attempt)) return;
+    const ids = [...this.entries.values()]
+      .filter(
+        (entry) =>
+          entry.hostId === attempt.host &&
+          ["pending", "failed"].includes(entry.status),
+      )
+      .map((entry) => entry.id);
+    await this.resume(ids, attempt);
   }
   private save() {
     mkdirSync(dirname(this.file), { recursive: true, mode: 0o700 });
@@ -204,6 +345,7 @@ export class QuotaRecovery {
       busy: this.busy,
       scanning: !!this.scanning,
       scanError: this.scanError,
+      autoResumeOnAccountSwitch: this.autoResumeOnAccountSwitch,
     };
   }
   async list(refresh = true) {
@@ -317,53 +459,20 @@ export class QuotaRecovery {
     for (const [host, adapter] of this.hosts) {
       if (this.discovered.has(host)) continue;
       const page = await bounded(
-        adapter.listThreads({
-          archived: false,
-          sourceKinds: [
-            "cli",
-            "vscode",
-            "exec",
-            "appServer",
-            "subAgentThreadSpawn",
-          ],
-          useStateDbOnly: true,
-          cursor: null,
-          limit: 100,
-          sortKey: "updated_at",
-          sortDirection: "desc",
-          modelProviders: [],
-        }),
+        adapter.listThreads(this.historyParams(null)),
       ).catch(() => null);
       if (!page) {
         this.scanError = "部分任务暂时无法读取，请检查连接后刷新。";
         continue;
       }
-      const candidates = [...page.data];
-      let incomplete = false;
-      await Promise.all(
-        Array.from({ length: 4 }, async () => {
-          while (candidates.length && !this.busy) {
-            const item = candidates.shift()!;
-
-            try {
-              const thread = await bounded(adapter.readThread(item.id), 5000);
-              const last = thread?.turns?.at(-1);
-              if (thread && last?.status === "failed" && quota(last.error))
-                this.add(
-                  host,
-                  item.id,
-                  last.id,
-                  thread?.name || thread?.preview?.slice(0, 100) || item.id,
-                  (last.completedAt ?? thread?.updatedAt ?? Date.now() / 1000) *
-                    1000,
-                );
-            } catch {
-              incomplete = true;
-            }
-          }
-        }),
-      );
-      if (incomplete || candidates.length) {
+      if (
+        !(await this.discoverCandidates(
+          host,
+          adapter,
+          page.data,
+          () => !this.busy,
+        ))
+      ) {
         this.scanError = "部分任务暂时无法读取，请检查连接后刷新。";
         continue;
       }
@@ -398,6 +507,57 @@ export class QuotaRecovery {
       }
     }
     this.save();
+  }
+  private historyParams(cursor: string | null) {
+    return {
+      archived: false,
+      sourceKinds: [
+        "cli",
+        "vscode",
+        "exec",
+        "appServer",
+        "subAgentThreadSpawn",
+      ],
+      useStateDbOnly: true,
+      cursor,
+      limit: 100,
+      sortKey: "updated_at",
+      sortDirection: "desc",
+      modelProviders: [],
+    };
+  }
+  private async discoverCandidates(
+    host: string,
+    adapter: Adapter,
+    items: Thread[],
+    proceed: () => boolean,
+  ) {
+    const candidates = [...items];
+    let complete = true;
+    await Promise.all(
+      Array.from({ length: 4 }, async () => {
+        while (candidates.length && proceed()) {
+          const item = candidates.shift()!;
+          try {
+            const thread = await bounded(adapter.readThread(item.id), 5000);
+            const last = thread?.turns?.at(-1);
+            if (thread && last?.status === "failed" && quota(last.error))
+              this.add(
+                host,
+                item.id,
+                last.id,
+                thread.name || thread.preview?.slice(0, 100) || item.id,
+                (last.completedAt ?? thread.updatedAt ?? Date.now() / 1000) *
+                  1000,
+              );
+          } catch {
+            complete = false;
+          }
+        }
+      }),
+    );
+    if (!complete) this.scanError = "部分任务暂时无法读取，请检查连接后刷新。";
+    return complete && !candidates.length;
   }
   private async archived(adapter: Adapter, threadId: string) {
     let cursor: string | null = null;
@@ -436,7 +596,7 @@ export class QuotaRecovery {
         : last.status === "failed" && quota(last.error))
     );
   }
-  async resume(ids: unknown) {
+  async resume(ids: unknown, automatic?: AutoAttempt) {
     if (!Array.isArray(ids) || !ids.every((i) => typeof i === "string"))
       throw Error("无效的任务列表");
     if (this.busy) return this.visibleSnapshot();
@@ -449,8 +609,11 @@ export class QuotaRecovery {
         ids.map((id) => aliases.get(id) ?? id),
       )) {
         if (this.quotaRevision !== quotaRevision) break;
+        if (automatic && !this.autoAllowed(automatic)) break;
         const entry = this.entries.get(id);
         if (!entry || !["pending", "failed"].includes(entry.status)) continue;
+        if (automatic?.attempted.has(entry.id)) continue;
+        automatic?.attempted.add(entry.id);
         const adapter = this.hosts.get(entry.hostId);
         if (!adapter) {
           entry.status = "failed";
@@ -532,7 +695,8 @@ export class QuotaRecovery {
                   !attemptOpen ||
                   revision !== (this.revisions.get(key) ?? 0) ||
                   sourceRevision !== (this.revisions.get(sourceKey) ?? 0) ||
-                  this.quotaRevision !== quotaRevision
+                  this.quotaRevision !== quotaRevision ||
+                  (automatic && !this.autoAllowed(automatic))
                 )
                   throw Error("任务状态已变化，请刷新列表");
                 entry.status = "sending";
@@ -564,6 +728,8 @@ export class QuotaRecovery {
       this.save();
     } finally {
       this.busy = false;
+      for (const resolve of this.idleWaiters) resolve();
+      this.idleWaiters.clear();
     }
     return this.visibleSnapshot();
   }

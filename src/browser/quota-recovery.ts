@@ -11,9 +11,24 @@ type RecoveryEntry = {
 type RecoverySnapshot = {
   entries: RecoveryEntry[];
   busy: boolean;
+  autoResumeOnAccountSwitch: boolean;
   scanning?: boolean;
   scanError?: string;
 };
+type RecoverySetting = "autoResumeOnAccountSwitch";
+const settings: {
+  key: RecoverySetting;
+  channel: string;
+  label: string;
+  description: string;
+}[] = [
+  {
+    key: "autoResumeOnAccountSwitch",
+    channel: "quota-recovery:set-auto-resume",
+    label: "换号后自动继续中断任务",
+    description: "换号成功后，自动继续全部因额度不足中断的任务。",
+  },
+];
 type Invoke = (channel: string, ...args: unknown[]) => Promise<unknown>;
 
 const statusLabels: Record<RecoveryEntry["status"], string> = {
@@ -30,8 +45,15 @@ const selectable = (entry: RecoveryEntry) =>
 /** Install once for the lifetime of the browser shim. */
 export function installQuotaRecovery(invoke: Invoke): void {
   if (customElements.get("codex-quota-recovery-label")) return;
-  let snapshot: RecoverySnapshot = { entries: [], busy: false };
+  let snapshot: RecoverySnapshot = {
+    entries: [],
+    busy: false,
+    autoResumeOnAccountSwitch: false,
+  };
   let known = false;
+  let settingKnown = false;
+  let savingSetting = false;
+  let settingError = "";
   let loading = false;
   let submitting = false;
   let uncertain = false;
@@ -42,6 +64,9 @@ export function installQuotaRecovery(invoke: Invoke): void {
   let notice: HTMLParagraphElement;
   let submit: HTMLButtonElement;
   let refresh: HTMLButtonElement;
+  const settingInputs = new Map<RecoverySetting, HTMLInputElement>();
+  let settingNotice: HTMLSpanElement;
+  let renderedRowsState = "";
   let poll: ReturnType<typeof setTimeout> | undefined;
   let listRequest: Promise<void> | undefined;
 
@@ -58,7 +83,8 @@ export function installQuotaRecovery(invoke: Invoke): void {
     if (
       !next ||
       !Array.isArray(next.entries) ||
-      typeof next.busy !== "boolean"
+      typeof next.busy !== "boolean" ||
+      typeof next.autoResumeOnAccountSwitch !== "boolean"
     ) {
       throw new Error("Invalid quota recovery response");
     }
@@ -80,16 +106,13 @@ export function installQuotaRecovery(invoke: Invoke): void {
         .map((entry) => entry.id),
     );
     known = true;
+    settingKnown = true;
     updateLabels();
   }
   function schedulePoll() {
     clearTimeout(poll);
-    if (
-      dialog?.open &&
-      (snapshot.scanning ||
-        snapshot.busy ||
-        snapshot.entries.some((entry) => entry.status === "sending"))
-    ) {
+    // Other pages can change the setting or start recovery while this is open.
+    if (dialog?.open && !settingError) {
       poll = setTimeout(() => {
         void load(true);
       }, 2000);
@@ -97,7 +120,21 @@ export function installQuotaRecovery(invoke: Invoke): void {
   }
   function render() {
     if (!dialog) return;
-    const busy = submitting || snapshot.busy;
+    const busy = submitting || savingSetting || snapshot.busy;
+    for (const [key, input] of settingInputs) {
+      input.checked = snapshot[key];
+      input.indeterminate = !settingKnown;
+      input.disabled = !settingKnown || savingSetting || submitting || loading;
+    }
+    settingNotice.textContent =
+      settingError ||
+      (savingSetting
+        ? "正在保存设置…"
+        : !settingKnown
+          ? "正在读取设置，读取成功后可修改。"
+          : "");
+    settingNotice.hidden = !settingNotice.textContent;
+    settingNotice.setAttribute("role", settingError ? "alert" : "status");
     const totals = Object.entries(statusLabels)
       .map(([status, label]) => {
         const count = snapshot.entries.filter(
@@ -114,41 +151,51 @@ export function installQuotaRecovery(invoke: Invoke): void {
         ? "正在读取中断任务…"
         : totals.join("，") || "没有因额度不足中断的任务。");
     notice.setAttribute("role", error ? "alert" : "status");
-    rows.replaceChildren();
-    for (const entry of snapshot.entries) {
-      const row = document.createElement("label");
-      row.className = "quota-recovery-row";
-      const checkbox = document.createElement("input");
-      checkbox.type = "checkbox";
-      checkbox.checked = selected.has(entry.id);
-      checkbox.disabled = busy || loading || uncertain || !selectable(entry);
-      checkbox.setAttribute(
-        "aria-label",
-        `继续 ${entry.title || "未命名任务"}`,
-      );
-      checkbox.onchange = () => {
-        if (checkbox.checked) selected.add(entry.id);
-        else selected.delete(entry.id);
-        updateSubmit();
-      };
-      const content = document.createElement("span");
-      const title = document.createElement("strong");
-      title.textContent = entry.title || "未命名任务";
-      const meta = document.createElement("span");
-      meta.className = "quota-recovery-meta";
-      const date = new Date(entry.interruptedAt);
-      meta.textContent = `${Number.isNaN(date.getTime()) ? "中断时间未知" : date.toLocaleString()} · ${statusLabels[entry.status] || entry.status}`;
-      content.append(title, meta);
-      if (entry.detail || entry.status === "unknown") {
-        const detail = document.createElement("span");
-        detail.className = "quota-recovery-meta";
-        detail.textContent = entry.detail || "发送结果待核对，暂不重复发送。";
-        content.append(detail);
+    const rowsState = JSON.stringify([
+      snapshot.entries,
+      busy,
+      loading,
+      uncertain,
+    ]);
+    // Quiet polling must not replace focused task checkboxes every two seconds.
+    if (rowsState !== renderedRowsState) {
+      renderedRowsState = rowsState;
+      rows.replaceChildren();
+      for (const entry of snapshot.entries) {
+        const row = document.createElement("label");
+        row.className = "quota-recovery-row";
+        const checkbox = document.createElement("input");
+        checkbox.type = "checkbox";
+        checkbox.checked = selected.has(entry.id);
+        checkbox.disabled = busy || loading || uncertain || !selectable(entry);
+        checkbox.setAttribute(
+          "aria-label",
+          `继续 ${entry.title || "未命名任务"}`,
+        );
+        checkbox.onchange = () => {
+          if (checkbox.checked) selected.add(entry.id);
+          else selected.delete(entry.id);
+          updateSubmit();
+        };
+        const content = document.createElement("span");
+        const title = document.createElement("strong");
+        title.textContent = entry.title || "未命名任务";
+        const meta = document.createElement("span");
+        meta.className = "quota-recovery-meta";
+        const date = new Date(entry.interruptedAt);
+        meta.textContent = `${Number.isNaN(date.getTime()) ? "中断时间未知" : date.toLocaleString()} · ${statusLabels[entry.status] || entry.status}`;
+        content.append(title, meta);
+        if (entry.detail || entry.status === "unknown") {
+          const detail = document.createElement("span");
+          detail.className = "quota-recovery-meta";
+          detail.textContent = entry.detail || "发送结果待核对，暂不重复发送。";
+          content.append(detail);
+        }
+        row.append(checkbox, content);
+        rows.append(row);
       }
-      row.append(checkbox, content);
-      rows.append(row);
     }
-    refresh.disabled = loading || submitting;
+    refresh.disabled = loading || submitting || savingSetting;
     refresh.textContent = loading ? "正在刷新…" : "刷新";
     updateSubmit();
     schedulePoll();
@@ -159,6 +206,7 @@ export function installQuotaRecovery(invoke: Invoke): void {
       !known ||
       loading ||
       submitting ||
+      savingSetting ||
       snapshot.busy ||
       uncertain ||
       selected.size === 0;
@@ -170,15 +218,18 @@ export function installQuotaRecovery(invoke: Invoke): void {
   function load(pollOnly = false): Promise<void> {
     if (listRequest) return listRequest;
     // A pre-send list response must never replace the newer send result.
-    if (submitting) return Promise.resolve();
-    loading = true;
+    if (submitting || savingSetting) return Promise.resolve();
+    loading = !pollOnly;
     render();
     listRequest = (async () => {
       try {
         apply(await invoke("quota-recovery:list", { refresh: !pollOnly }));
         uncertain = false;
+        settingError = "";
         error = "";
       } catch {
+        settingKnown = false;
+        settingError = "未能读取设置，请点击刷新重试。";
         error = "未能读取中断任务，请点击刷新重试。";
       } finally {
         loading = false;
@@ -187,6 +238,38 @@ export function installQuotaRecovery(invoke: Invoke): void {
       }
     })();
     return listRequest;
+  }
+  async function saveSetting(
+    key: RecoverySetting,
+    channel: string,
+    enabled: boolean,
+  ) {
+    const input = settingInputs.get(key);
+    if (!input || input.disabled) return;
+    const restoreFocus = document.activeElement === input;
+    savingSetting = true;
+    settingError = "";
+    render();
+    // Finish any older read before saving, so its response cannot undo the UI.
+    await listRequest;
+    try {
+      apply(await invoke(channel, enabled));
+      settingError = "";
+    } catch {
+      settingKnown = false;
+      settingError = "未能确认设置是否保存，请刷新核对后再操作。";
+    } finally {
+      savingSetting = false;
+      render();
+      if (
+        restoreFocus &&
+        dialog?.open &&
+        document.activeElement === document.body
+      ) {
+        if (!input.disabled) input.focus();
+        else refresh.focus();
+      }
+    }
   }
   async function resume() {
     if (submit.disabled) return;
@@ -197,6 +280,7 @@ export function installQuotaRecovery(invoke: Invoke): void {
     submitting = true;
     error = "";
     render();
+    await listRequest;
     try {
       apply(await invoke("quota-recovery:resume", ids));
     } catch {
@@ -223,10 +307,44 @@ export function installQuotaRecovery(invoke: Invoke): void {
     const description = document.createElement("p");
     description.textContent =
       "换好账号后，选择因额度不足中断的任务，统一发送继续消息。";
+    const settingRows = document.createElement("div");
+    settingInputs.clear();
+    for (const { key, channel, label, description } of settings) {
+      const setting = document.createElement("label");
+      setting.className = "quota-recovery-row quota-recovery-setting";
+      const input = document.createElement("input");
+      input.type = "checkbox";
+      input.setAttribute("aria-labelledby", `quota-recovery-${key}-title`);
+      input.setAttribute(
+        "aria-describedby",
+        `quota-recovery-${key}-description quota-recovery-setting-notice`,
+      );
+      input.onchange = () => {
+        void saveSetting(key, channel, input.checked);
+      };
+      settingInputs.set(key, input);
+      const content = document.createElement("span");
+      const title = document.createElement("strong");
+      title.id = `quota-recovery-${key}-title`;
+      title.textContent = label;
+      const detail = document.createElement("span");
+      detail.id = `quota-recovery-${key}-description`;
+      detail.className = "quota-recovery-meta";
+      detail.textContent = description;
+      content.append(title, detail);
+      setting.append(input, content);
+      settingRows.append(setting);
+    }
+    settingNotice = document.createElement("span");
+    settingNotice.id = "quota-recovery-setting-notice";
+    settingNotice.className = "quota-recovery-setting-notice";
+    settingNotice.setAttribute("aria-live", "polite");
+    settingRows.append(settingNotice);
     notice = document.createElement("p");
     notice.setAttribute("aria-live", "polite");
     rows = document.createElement("div");
     rows.className = "quota-recovery-rows";
+    renderedRowsState = "";
     const footer = document.createElement("footer");
     const close = document.createElement("button");
     close.type = "button";
@@ -244,7 +362,7 @@ export function installQuotaRecovery(invoke: Invoke): void {
       void resume();
     };
     footer.append(close, refresh, submit);
-    dialog.append(title, description, notice, rows, footer);
+    dialog.append(title, description, settingRows, notice, rows, footer);
     const current = dialog;
     current.addEventListener(
       "close",
@@ -275,6 +393,8 @@ html.electron-dark .codex-quota-recovery { color:var(--color-text-primary,#eee);
 .quota-recovery-row input { flex:none; width:18px; height:18px; margin-top:2px; accent-color:currentColor; }
 .quota-recovery-row > span { min-width:0; overflow-wrap:anywhere; }
 .quota-recovery-row strong { display:block; font-weight:500; }
+.quota-recovery-setting { margin-bottom:16px; }
+.quota-recovery-setting-notice:not([hidden]) { display:block; margin-bottom:16px; font-size:13px; }
 .quota-recovery-meta { display:block; margin-top:4px; opacity:.7; font-size:12px; }
 .codex-quota-recovery footer { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:8px; margin-top:20px; }
 .codex-quota-recovery button { color:inherit; background:transparent; min-height:44px; padding:8px 14px; border:1px solid #8886; border-radius:8px; font:inherit; font-size:13px; cursor:pointer; }
@@ -295,5 +415,8 @@ html.electron-dark .codex-quota-recovery { color:var(--color-text-primary,#eee);
   window.addEventListener("codex-quota-recovery-open", () => {
     // Let the account menu close and release its focus trap first.
     setTimeout(open, 0);
+  });
+  window.addEventListener("focus", () => {
+    if (dialog?.open) void load(true);
   });
 }

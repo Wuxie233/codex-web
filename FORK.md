@@ -236,9 +236,17 @@ Recheck the helper patch when upgrading Desktop bundles. Relevant checks are
 ### Quota interruption recovery
 
 The account menu's “继续中断任务” action lists terminal `usageLimitExceeded`
-failures and sends an explicit continuation message to selected tasks. Signing in
-never sends messages automatically. The first list request also checks the 100
-most recently updated, unarchived interactive threads for earlier failures.
+failures and sends an explicit continuation message to selected tasks.
+The “换号后自动继续中断任务” setting defaults to off and continues
+quota-interrupted tasks after the connection confirms a different authenticated
+account. Initial login and same-account token refresh do not trigger it. Automatic
+discovery walks all unarchived interactive history pages, including tasks that
+have not been opened in the browser.
+
+The manual list request checks the 100 most recently updated unarchived interactive
+threads. Settings are shared across tabs and persist alongside the queue in
+`$CODEX_HOME/codex-web-quota-recovery.json.settings.json`. Closing the dialog does
+not disable automatic recovery; turn it off with its checkbox.
 The dialog hides resumed and skipped records; the server retains them for
 deduplication. Sending and uncertain results remain visible until resolved.
 
@@ -253,5 +261,6 @@ Unknown delivery results are never retried automatically; refresh reconciles the
 only when the unique client message ID appears in history. A crash during dispatch
 also becomes unknown. A new quota failure pauses the remaining batch when observed.
 The menu and main-process patches must be reapplied on Desktop bundle upgrades.
-Validate with `npm run build:server`, `node --test tests/quota-recovery.test.cjs`
+Validate with `npm run build:server`,
+`node --test tests/quota-recovery.test.cjs tests/quota-account-hook.test.cjs`
 and `npm run build:browser`.

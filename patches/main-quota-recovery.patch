@@ -1,6 +1,6 @@
 --- a/.vite/build/main-C5K7o1Hr.js
 +++ b/.vite/build/main-C5K7o1Hr.js
-@@ -135776,6 +135776,17 @@
+@@ -135776,6 +135776,34 @@
          getRemoteConnectionMaxRetryAttempts: () =>
            this.appState.get(n.Sc.REMOTE_CONNECTION_MAX_RETRY_ATTEMPTS) ?? null,
        });
@@ -12,8 +12,25 @@
 +        resumeThread: (id, options) => m.resumeThread(id, options),
 +        startTurn: (params, beforeSend) => m.startTurn(params, undefined, beforeSend),
 +      });
-+      m.registerInternalNotificationHandler((event) => recovery.observe(e, event));
++      let accountRefreshGeneration = 0;
++      m.registerInternalNotificationHandler((event) => {
++        recovery.observe(e, event);
++        if (event.method !== "account/updated") return;
++        const generation = ++accountRefreshGeneration;
++        void m.getAuthenticatedPrincipal().then((principal) => {
++          if (generation === accountRefreshGeneration && principal)
++            return recovery.accountChanged(e, principal);
++        }).catch(() => {});
++      });
 +      m.registerArchiveSuccessHandler((threadId) => recovery.observe(e, { method: "thread/archived", params: { threadId } }));
++      let principalObserved = false;
++      m.registerInternalAuthenticatedPrincipalChangeHandler(({ current }) => {
++        principalObserved = true;
++        void recovery.accountChanged(e, current).catch(() => {});
++      });
++      void m.getAuthenticatedPrincipal().then((principal) => {
++        if (!principalObserved) return recovery.accountChanged(e, principal);
++      }).catch(() => {});
 +    }
      if (t.id === `local` && this.options.onAppServerSqliteRecovery != null) {
        let e = this.options.onAppServerSqliteRecovery;

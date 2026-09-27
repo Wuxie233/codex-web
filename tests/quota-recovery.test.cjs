@@ -413,3 +413,200 @@ test("parent metadata updates do not count as continuation but a newer turn does
     assert.equal(listed.entries[0].status, newerTurn ? "skipped" : "pending");
   }
 });
+
+const principal = (id) => ({ accountId: id, userId: `user-${id}` });
+function fastRecovery(t) {
+  const real = global.setTimeout;
+  t.mock.method(global, "setTimeout", (callback, delay, ...args) =>
+    real(callback, delay === 1500 ? 0 : delay, ...args),
+  );
+}
+
+test("auto settings default off, persist separately from legacy entries and reject invalid values", (t) => {
+  const f = fixture(t);
+  f.fail();
+  assert.equal(f.recovery.snapshot().autoResumeOnAccountSwitch, false);
+  assert.equal(f.recovery.setAutoResume(true).autoResumeOnAccountSwitch, true);
+  assert.throws(() => f.recovery.setAutoResume("true"), /设置/);
+  const reloaded = new QuotaRecovery(f.file);
+  assert.equal(reloaded.snapshot().entries.length, 1);
+  assert.equal(reloaded.snapshot().autoResumeOnAccountSwitch, true);
+  fs.mkdirSync(f.file + ".settings.json.tmp");
+  assert.throws(() => f.recovery.setAutoResume(false));
+  assert.equal(f.recovery.snapshot().autoResumeOnAccountSwitch, true);
+});
+
+test("account baseline, refresh, disabled switches and enabling alone never dispatch", async (t) => {
+  const f = fixture(t);
+  f.fail();
+  await f.recovery.accountChanged("local", principal("a"));
+  await f.recovery.accountChanged("local", principal("b"));
+  f.recovery.setAutoResume(true);
+  await f.recovery.accountChanged("local", principal("b"));
+  await f.recovery.accountChanged("local", null);
+  await f.recovery.accountChanged("local", principal("b"));
+  assert.equal(f.sent.length, 0);
+});
+
+test("a usable new principal resumes once without any list or opened dialog", async (t) => {
+  fastRecovery(t);
+  const f = fixture(t);
+  f.fail();
+  f.recovery.setAutoResume(true);
+  await f.recovery.accountChanged("local", principal("a"));
+  await f.recovery.accountChanged("local", null);
+  await Promise.all([
+    f.recovery.accountChanged("local", principal("b")),
+    f.recovery.accountChanged("local", principal("b")),
+  ]);
+  assert.equal(f.sent.length, 1);
+  await f.recovery.accountChanged("local", principal("c"));
+  assert.equal(f.sent.length, 1);
+});
+
+test("automatic history discovery continues past page 100 without relying on a manual scan", async (t) => {
+  fastRecovery(t);
+  const f = fixture(t);
+  const firstPage = Array.from({ length: 100 }, (_, i) => ({
+    id: `done-${i}`,
+    turns: [],
+  }));
+  const last = {
+    id: "unopened",
+    status: { type: "notLoaded" },
+    turns: [{ id: "quota", status: "failed", error: quota }],
+  };
+  for (const thread of [...firstPage, last]) f.threads.set(thread.id, thread);
+  const cursors = [];
+  f.adapter.listThreads = async (params) => {
+    if (params.archived) return { data: [] };
+    cursors.push(params.cursor);
+    return params.cursor
+      ? { data: [last] }
+      : { data: firstPage, nextCursor: "page-2" };
+  };
+  f.recovery.setAutoResume(true);
+  await f.recovery.accountChanged("local", principal("a"));
+  await f.recovery.accountChanged("local", principal("b"));
+  assert.deepEqual(cursors, [null, "page-2"]);
+  assert.deepEqual(f.resumed, ["unopened"]);
+  assert.deepEqual(
+    f.sent.map((x) => x.threadId),
+    ["unopened"],
+  );
+});
+
+test("disabling automatic recovery during transport preparation prevents dispatch", async (t) => {
+  const f = fixture(t);
+  f.fail();
+  f.recovery.setAutoResume(true);
+  f.adapter.startTurn = async (_params, beforeSend) => {
+    f.recovery.setAutoResume(false);
+    beforeSend();
+    assert.fail("disabled automation dispatched");
+  };
+  await f.recovery.accountChanged("local", principal("a"));
+  await f.recovery.accountChanged("local", principal("b"));
+  assert.equal(f.sent.length, 0);
+});
+
+test("automatic recovery waits for manual sends and cannot duplicate the same entry", async (t) => {
+  fastRecovery(t);
+  const f = fixture(t),
+    id = f.fail();
+  f.recovery.setAutoResume(true);
+  await f.recovery.accountChanged("local", principal("a"));
+  await Promise.all([
+    f.recovery.resume([id]),
+    f.recovery.accountChanged("local", principal("b")),
+  ]);
+  assert.equal(f.sent.length, 1);
+});
+
+test("an automatic batch stops when the new account also hits quota", async (t) => {
+  fastRecovery(t);
+  const f = fixture(t);
+  f.fail("a", "fa");
+  f.fail("b", "fb");
+  const start = f.adapter.startTurn;
+  f.adapter.startTurn = async (...args) => {
+    const result = await start(...args);
+    f.recovery.observe("local", {
+      method: "turn/completed",
+      params: {
+        threadId: args[0].threadId,
+        turn: { id: "new-quota", status: "failed", error: quota },
+      },
+    });
+    return result;
+  };
+  f.recovery.setAutoResume(true);
+  await f.recovery.accountChanged("local", principal("a"));
+  await f.recovery.accountChanged("local", principal("b"));
+  assert.equal(f.sent.length, 1);
+  assert.equal(
+    f.recovery.snapshot().entries.find((x) => x.threadId === "b").status,
+    "pending",
+  );
+});
+
+test("unknown, manually stopped and running entries are excluded from automatic continuation", async (t) => {
+  const f = fixture(t);
+  const unknown = f.fail("unknown");
+  f.adapter.startTurn = async (_params, beforeSend) => {
+    beforeSend();
+    throw Error("unknown delivery");
+  };
+  await f.recovery.resume([unknown]);
+  f.fail("stopped");
+  f.threads.get("stopped").turns[0].status = "interrupted";
+  f.fail("running");
+  f.threads.get("running").status = { type: "active" };
+  f.adapter.startTurn = async () =>
+    assert.fail("unsafe automatic continuation");
+  f.recovery.setAutoResume(true);
+  await f.recovery.accountChanged("local", principal("a"));
+  await f.recovery.accountChanged("local", principal("b"));
+  assert.equal(
+    f.recovery.snapshot().entries.find((x) => x.id === unknown).status,
+    "unknown",
+  );
+});
+
+test("an account switch affects only the host using that account", async (t) => {
+  fastRecovery(t);
+  const f = fixture(t);
+  f.fail();
+  f.recovery.registerHost("remote", {
+    ...f.adapter,
+    listThreads: async () => ({ data: [] }),
+  });
+  f.recovery.setAutoResume(true);
+  await f.recovery.accountChanged("remote", principal("a"));
+  await f.recovery.accountChanged("remote", principal("b"));
+  assert.equal(f.sent.length, 0);
+});
+
+test("pre-dispatch failures are attempted only once per account switch, including paginated history", async (t) => {
+  const f = fixture(t);
+  f.fail();
+  let attempts = 0;
+  f.adapter.startTurn = async () => {
+    attempts++;
+    throw Error("transport not ready");
+  };
+  const list = f.adapter.listThreads;
+  f.adapter.listThreads = async (params) =>
+    params.archived
+      ? list(params)
+      : {
+          data: [...f.threads.values()],
+          nextCursor: params.cursor ? null : "second",
+        };
+  f.recovery.setAutoResume(true);
+  await f.recovery.accountChanged("local", principal("a"));
+  await f.recovery.accountChanged("local", principal("b"));
+  assert.equal(attempts, 1);
+  await f.recovery.accountChanged("local", principal("c"));
+  assert.equal(attempts, 2);
+});
