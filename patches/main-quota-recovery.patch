@@ -1,6 +1,6 @@
 --- a/.vite/build/main-C5K7o1Hr.js
 +++ b/.vite/build/main-C5K7o1Hr.js
-@@ -135776,6 +135776,34 @@
+@@ -135776,6 +135776,83 @@
          getRemoteConnectionMaxRetryAttempts: () =>
            this.appState.get(n.Sc.REMOTE_CONNECTION_MAX_RETRY_ATTEMPTS) ?? null,
        });
@@ -13,23 +13,72 @@
 +        startTurn: (params, beforeSend) => m.startTurn(params, undefined, beforeSend),
 +      });
 +      let accountRefreshGeneration = 0;
++      let quotaReadGeneration = 0;
++      let currentPrincipal = null;
++      let pendingAccountUpdate;
++      const samePrincipal = (left, right) => left?.accountId === right?.accountId && left?.userId === right?.userId;
++      const readUsage = (principal, generation, update) => {
++        if (!principal) return;
++        const readGeneration = ++quotaReadGeneration;
++        void m.sendAppServerRequest("account/rateLimits/read", undefined).catch(() => null).then((response) => {
++          if (generation !== accountRefreshGeneration || readGeneration !== quotaReadGeneration || !samePrincipal(principal, currentPrincipal)) return;
++          recovery.accountRateLimitsRead(e, principal, response);
++          if (update) {
++            if (pendingAccountUpdate !== update) return;
++            pendingAccountUpdate = undefined;
++            return recovery.completeAccountUpdate(e, update, principal, response);
++          }
++        }).catch(() => {});
++      };
 +      m.registerInternalNotificationHandler((event) => {
 +        recovery.observe(e, event);
++        if (event.method === "account/rateLimits/updated") {
++          if (!pendingAccountUpdate) readUsage(currentPrincipal, accountRefreshGeneration);
++          return;
++        }
 +        if (event.method !== "account/updated") return;
 +        const generation = ++accountRefreshGeneration;
-+        void m.getAuthenticatedPrincipal().then((principal) => {
-+          if (generation === accountRefreshGeneration && principal)
-+            return recovery.accountChanged(e, principal);
-+        }).catch(() => {});
++        ++quotaReadGeneration;
++        pendingAccountUpdate = undefined;
++        if (event.params?.authMode === null) return;
++        const update = recovery.beginAccountUpdate(e);
++        pendingAccountUpdate = update;
++        void m.getAuthenticatedPrincipal().catch(() => null).then((principal) => {
++          if (generation !== accountRefreshGeneration) return;
++          if (!principal) {
++            pendingAccountUpdate = undefined;
++            return recovery.completeAccountUpdate(e, update, null, null);
++          }
++          currentPrincipal = principal;
++          void recovery.accountChanged(e, principal).catch(() => {});
++          readUsage(principal, generation, update);
++        }).catch(() => {
++          if (generation !== accountRefreshGeneration) return;
++          pendingAccountUpdate = undefined;
++          void recovery.completeAccountUpdate(e, update, null, null).catch(() => {});
++        });
 +      });
 +      m.registerArchiveSuccessHandler((threadId) => recovery.observe(e, { method: "thread/archived", params: { threadId } }));
 +      let principalObserved = false;
 +      m.registerInternalAuthenticatedPrincipalChangeHandler(({ current }) => {
 +        principalObserved = true;
++        if (!current || (currentPrincipal && !samePrincipal(current, currentPrincipal))) {
++          ++accountRefreshGeneration;
++          ++quotaReadGeneration;
++          pendingAccountUpdate = undefined;
++        }
++        currentPrincipal = current;
 +        void recovery.accountChanged(e, current).catch(() => {});
++        if (current && !pendingAccountUpdate) readUsage(current, accountRefreshGeneration);
 +      });
++      const initialGeneration = accountRefreshGeneration;
 +      void m.getAuthenticatedPrincipal().then((principal) => {
-+        if (!principalObserved) return recovery.accountChanged(e, principal);
++        if (initialGeneration !== accountRefreshGeneration) return;
++        if (!principalObserved) {
++          currentPrincipal = principal;
++          void recovery.accountChanged(e, principal).catch(() => {});
++          readUsage(currentPrincipal, initialGeneration);
++        }
 +      }).catch(() => {});
 +    }
      if (t.id === `local` && this.options.onAppServerSqliteRecovery != null) {

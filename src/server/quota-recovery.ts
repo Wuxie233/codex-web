@@ -13,7 +13,7 @@ import {
 export { RATE_LIMIT_CONTINUATION } from "./rate-limit-recovery";
 
 export const CONTINUATION =
-  "上一轮因账号额度不足而中断，现在已切换账号，请继续之前未完成的工作。先核对当前进度和已有执行结果，再从中断处接着处理，避免重复执行已完成的操作。";
+  "上一轮因账号额度不足而中断，现在账号已更新或额度已恢复，请继续之前未完成的工作。先核对当前进度和已有执行结果，再从中断处接着处理，避免重复执行已完成的操作。";
 type Status =
   | "pending"
   | "sending"
@@ -22,6 +22,48 @@ type Status =
   | "failed"
   | "unknown";
 type Principal = { accountId: string; userId: string } | null;
+type UsageState = "exhausted" | "available" | "unknown";
+type AccountUpdate = {
+  identity: string | undefined;
+  exhausted: boolean;
+  generation: number;
+  quotaRevision: number;
+};
+function identityOf(principal: NonNullable<Principal>) {
+  return JSON.stringify([principal.accountId, principal.userId]);
+}
+function usageState(
+  principal: NonNullable<Principal>,
+  value: unknown,
+): UsageState {
+  if (!value || typeof value !== "object") return "unknown";
+  const response = value as Record<string, any>;
+  if (response.accountId !== principal.accountId) return "unknown";
+  const limits = response.rateLimitsByLimitId?.codex ?? response.rateLimits;
+  if (!limits || (limits.limitId != null && limits.limitId !== "codex"))
+    return "unknown";
+  const windows = [limits.primary, limits.secondary].filter((w) => w != null);
+  if (
+    !windows.length ||
+    windows.some(
+      (w) =>
+        typeof w.usedPercent !== "number" ||
+        !Number.isFinite(w.usedPercent) ||
+        w.usedPercent < 0 ||
+        w.usedPercent > 100,
+    )
+  )
+    return "unknown";
+  const exhausted = windows.some((w) => w.usedPercent === 100);
+  if (response.ordinaryUsageAllowed === false && exhausted) return "exhausted";
+  if (
+    response.ordinaryUsageAllowed === true &&
+    !exhausted &&
+    limits.spendControlReached !== true
+  )
+    return "available";
+  return "unknown";
+}
 type AutoAttempt = {
   host: string;
   generation: number;
@@ -115,6 +157,8 @@ export class QuotaRecovery {
   private scanError: string | undefined;
   private autoResumeOnAccountSwitch = false;
   private accounts = new Map<string, string>();
+  private accountUsage = new Map<string, UsageState>();
+  private accountUpdates = new Map<string, AccountUpdate>();
   private accountGenerations = new Map<string, number>();
   private autoQueue = new Map<string, AutoAttempt>();
   private autoRunning: Promise<void> | undefined;
@@ -182,6 +226,7 @@ export class QuotaRecovery {
     this.setPreference(value);
     if (!value) {
       this.autoQueue.clear();
+      this.accountUpdates.clear();
       for (const [host, generation] of this.accountGenerations)
         this.accountGenerations.set(host, generation + 1);
     }
@@ -317,6 +362,7 @@ export class QuotaRecovery {
   // Token refreshes and initial connection are baselines, not account switches.
   accountChanged(host: string, principal: Principal) {
     if (!principal) {
+      this.accountUpdates.delete(host);
       this.accountGenerations.set(
         host,
         (this.accountGenerations.get(host) ?? 0) + 1,
@@ -324,11 +370,55 @@ export class QuotaRecovery {
       this.autoQueue.delete(host);
       return this.autoRunning ?? Promise.resolve();
     }
-    const identity = JSON.stringify([principal.accountId, principal.userId]);
+    const identity = identityOf(principal);
     const previous = this.accounts.get(host);
     this.accounts.set(host, identity);
     if (!previous || previous === identity)
       return this.autoRunning ?? Promise.resolve();
+    this.accountUsage.delete(host);
+    this.accountUpdates.delete(host);
+    return this.queueAccountRecovery(host);
+  }
+  // Usage reads alone never start work, including a periodic zero-to-positive update.
+  accountRateLimitsRead(host: string, principal: Principal, response: unknown) {
+    if (!principal || this.accounts.get(host) !== identityOf(principal)) return;
+    this.accountUsage.set(host, usageState(principal, response));
+  }
+  // Native account/updated invalidates its principal cache before notifying us.
+  // Keep the prior usage baseline across that temporary null principal.
+  beginAccountUpdate(host: string): AccountUpdate {
+    const update: AccountUpdate = {
+      identity: this.accounts.get(host),
+      exhausted: this.accountUsage.get(host) === "exhausted",
+      generation: this.accountGenerations.get(host) ?? 0,
+      quotaRevision: this.quotaRevision,
+    };
+    this.accountUpdates.set(host, update);
+    this.accountUsage.delete(host);
+    return update;
+  }
+  completeAccountUpdate(
+    host: string,
+    update: AccountUpdate,
+    principal: Principal,
+    response: unknown,
+  ) {
+    if (this.accountUpdates.get(host) !== update)
+      return this.autoRunning ?? Promise.resolve();
+    this.accountUpdates.delete(host);
+    this.accountRateLimitsRead(host, principal, response);
+    if (
+      !principal ||
+      update.identity !== identityOf(principal) ||
+      !update.exhausted ||
+      this.accountUsage.get(host) !== "available" ||
+      update.generation !== (this.accountGenerations.get(host) ?? 0) ||
+      update.quotaRevision !== this.quotaRevision
+    )
+      return this.autoRunning ?? Promise.resolve();
+    return this.queueAccountRecovery(host);
+  }
+  private queueAccountRecovery(host: string) {
     const generation = (this.accountGenerations.get(host) ?? 0) + 1;
     this.accountGenerations.set(host, generation);
     if (this.autoResumeOnAccountSwitch) {

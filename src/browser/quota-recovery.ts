@@ -30,7 +30,8 @@ const settings: {
     key: "autoResumeOnAccountSwitch",
     channel: "quota-recovery:set-auto-resume",
     label: "换号后自动继续中断任务",
-    description: "换号成功后，自动继续全部因额度不足中断的任务。",
+    description:
+      "换号成功，或原账号重新登录后额度从 0% 恢复时，自动继续因额度不足中断的任务。",
   },
   {
     key: "autoResumeOn429",

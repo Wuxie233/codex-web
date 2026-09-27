@@ -239,9 +239,13 @@ The account menu's “继续中断任务” action lists terminal quota and HTTP
 failures and sends an explicit continuation message to selected tasks.
 The “换号后自动继续中断任务” setting defaults to off and continues
 quota-interrupted tasks after the connection confirms a different authenticated
-account. Initial login and same-account token refresh do not trigger it. Automatic
-discovery walks all unarchived interactive history pages, including tasks that
-have not been opened in the browser.
+account. It also continues after reauthentication with the same account when a
+confirmed exhausted allowance before reauthentication becomes usable afterward.
+The post-authentication quota read must match the account, explicitly allow ordinary
+usage, and show no exhausted usage window. Missing or unknown quota data does not
+trigger recovery. Initial connection and quota polling alone do not trigger it.
+Automatic discovery walks all unarchived interactive history pages, including
+tasks that have not been opened in the browser.
 
 The independent “429 后自动继续” setting also defaults to off. After a terminal
 rate-limit failure it waits 30, 60, then 120 seconds before sending a continuation

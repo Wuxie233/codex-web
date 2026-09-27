@@ -610,3 +610,209 @@ test("pre-dispatch failures are attempted only once per account switch, includin
   await f.recovery.accountChanged("local", principal("c"));
   assert.equal(attempts, 2);
 });
+
+const usage = (
+  accountId,
+  primary,
+  secondary = 20,
+  allowed = primary < 100 && secondary < 100,
+) => ({
+  accountId,
+  ordinaryUsageAllowed: allowed,
+  rateLimits: {
+    limitId: "codex",
+    primary: { usedPercent: primary },
+    secondary: { usedPercent: secondary },
+  },
+});
+
+test("same-account authentication resumes only a confirmed exhausted-to-available transition", async (t) => {
+  fastRecovery(t);
+  const f = fixture(t);
+  f.fail();
+  f.recovery.setAutoResume(true);
+  await f.recovery.accountChanged("local", principal("a"));
+  f.recovery.accountRateLimitsRead("local", principal("a"), usage("a", 100));
+  // Native cache invalidation precedes account/updated, including logout/login.
+  await f.recovery.accountChanged("local", null);
+  const update = f.recovery.beginAccountUpdate("local");
+  await f.recovery.accountChanged("local", principal("a"));
+  await f.recovery.completeAccountUpdate(
+    "local",
+    update,
+    principal("a"),
+    usage("a", 10),
+  );
+  await f.recovery.completeAccountUpdate(
+    "local",
+    update,
+    principal("a"),
+    usage("a", 10),
+  );
+  assert.equal(f.sent.length, 1);
+});
+
+test("same-account recovery rejects unknown, unavailable, stale, and disabled evidence", async (t) => {
+  const cases = [
+    ["still exhausted", usage("a", 100), usage("a", 100)],
+    ["secondary exhausted", usage("a", 100), usage("a", 5, 100, true)],
+    ["unknown before", null, usage("a", 5)],
+    ["unknown permission before", usage("a", 100, 20, null), usage("a", 5)],
+    ["unknown after", usage("a", 100), null],
+    ["unknown permission after", usage("a", 100), usage("a", 5, 20, null)],
+    ["mismatched response account", usage("a", 100), usage("b", 5)],
+    [
+      "no windows",
+      usage("a", 100),
+      { accountId: "a", ordinaryUsageAllowed: true, rateLimits: {} },
+    ],
+    ["malformed window", usage("a", 100), usage("a", "5", 20, true)],
+    ["off", usage("a", 100), usage("a", 5), "off"],
+    ["disabled while reading", usage("a", 100), usage("a", 5), "disable"],
+    ["newer authentication", usage("a", 100), usage("a", 5), "newer"],
+    ["new quota failure", usage("a", 100), usage("a", 5), "failure"],
+  ];
+  for (const [name, before, after, action] of cases)
+    await t.test(name, async (t) => {
+      const f = fixture(t);
+      f.fail();
+      if (action !== "off") f.recovery.setAutoResume(true);
+      await f.recovery.accountChanged("local", principal("a"));
+      f.recovery.accountRateLimitsRead("local", principal("a"), before);
+      const update = f.recovery.beginAccountUpdate("local");
+      if (action === "disable") {
+        f.recovery.setAutoResume(false);
+        f.recovery.setAutoResume(true);
+      }
+      if (action === "newer") f.recovery.beginAccountUpdate("local");
+      if (action === "failure") f.fail("two", "new-failure");
+      await f.recovery.completeAccountUpdate(
+        "local",
+        update,
+        principal("a"),
+        after,
+      );
+      assert.equal(f.sent.length, 0);
+    });
+});
+
+test("periodic quota recovery, principal refresh, and startup never act as reauthentication", async (t) => {
+  const f = fixture(t);
+  f.fail();
+  f.recovery.setAutoResume(true);
+  await f.recovery.accountChanged("local", principal("a"));
+  f.recovery.accountRateLimitsRead("local", principal("a"), usage("a", 100));
+  f.recovery.accountRateLimitsRead("local", principal("a"), usage("a", 10));
+  await f.recovery.accountChanged("local", null);
+  await f.recovery.accountChanged("local", principal("a"));
+  const update = f.recovery.beginAccountUpdate("local");
+  await f.recovery.completeAccountUpdate(
+    "local",
+    update,
+    principal("a"),
+    usage("a", 10),
+  );
+  assert.equal(f.sent.length, 0);
+});
+
+test("late usage from a previous principal cannot become the new account baseline", async (t) => {
+  const f = fixture(t);
+  f.fail();
+  await f.recovery.accountChanged("local", principal("a"));
+  f.recovery.accountRateLimitsRead("local", principal("a"), usage("a", 100));
+  const stale = f.recovery.beginAccountUpdate("local");
+  await f.recovery.accountChanged("local", principal("b"));
+  f.recovery.setAutoResume(true);
+  f.recovery.accountRateLimitsRead("local", principal("a"), usage("a", 100));
+  await f.recovery.completeAccountUpdate(
+    "local",
+    stale,
+    principal("a"),
+    usage("a", 10),
+  );
+  const update = f.recovery.beginAccountUpdate("local");
+  await f.recovery.completeAccountUpdate(
+    "local",
+    update,
+    principal("b"),
+    usage("b", 10),
+  );
+  assert.equal(f.sent.length, 0);
+});
+
+test("a switched-to exhausted account retains its baseline for the next same-account login", async (t) => {
+  fastRecovery(t);
+  const f = fixture(t);
+  f.recovery.setAutoResume(true);
+  await f.recovery.accountChanged("local", principal("a"));
+  f.recovery.accountRateLimitsRead("local", principal("a"), usage("a", 100));
+  await f.recovery.accountChanged("local", null);
+  const switchUpdate = f.recovery.beginAccountUpdate("local");
+  await f.recovery.accountChanged("local", principal("b"));
+  // The hook records every fresh response, even when a switch consumed its ticket.
+  f.recovery.accountRateLimitsRead("local", principal("b"), usage("b", 100));
+  await f.recovery.completeAccountUpdate(
+    "local",
+    switchUpdate,
+    principal("b"),
+    usage("b", 100),
+  );
+  f.fail();
+  await f.recovery.accountChanged("local", null);
+  const sameUpdate = f.recovery.beginAccountUpdate("local");
+  await f.recovery.accountChanged("local", principal("b"));
+  await f.recovery.completeAccountUpdate(
+    "local",
+    sameUpdate,
+    principal("b"),
+    usage("b", 10),
+  );
+  assert.equal(f.sent.length, 1);
+});
+
+test("same-account quota recovery leaves 429 entries and retry budgets untouched", async (t) => {
+  fastRecovery(t);
+  const f = fixture(t);
+  f.fail();
+  const rate = {
+    id: "rate-turn",
+    status: "failed",
+    error: {
+      codexErrorInfo: "rateLimitExceeded",
+      message: "429 Too Many Requests",
+    },
+    items: [],
+  };
+  f.threads.set("limited", {
+    id: "limited",
+    status: { type: "idle" },
+    turns: [rate],
+  });
+  f.recovery.observe("local", {
+    method: "turn/completed",
+    params: { threadId: "limited", turn: rate },
+  });
+  const before = f.recovery
+    .snapshot()
+    .entries.find((e) => e.threadId === "limited");
+  assert.equal(before.reason, "rateLimit");
+  f.recovery.setAutoResume(true);
+  await f.recovery.accountChanged("local", principal("a"));
+  f.recovery.accountRateLimitsRead("local", principal("a"), usage("a", 100));
+  const update = f.recovery.beginAccountUpdate("local");
+  await f.recovery.completeAccountUpdate(
+    "local",
+    update,
+    principal("a"),
+    usage("a", 10),
+  );
+  assert.deepEqual(
+    f.sent.map((s) => s.threadId),
+    ["one"],
+  );
+  const after = f.recovery
+    .snapshot()
+    .entries.find((e) => e.threadId === "limited");
+  for (const field of ["status", "reason", "autoRetryCount", "retryAt"])
+    assert.equal(after[field], before[field]);
+});
