@@ -1,6 +1,16 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { randomUUID } from "node:crypto";
+import {
+  RATE_LIMIT_CONTINUATION,
+  RATE_LIMIT_DELAYS,
+  recoveryReason,
+  recoveryClock,
+  type RecoveryReason,
+  type RecoveryClock,
+  type RateLimitChain,
+} from "./rate-limit-recovery";
+export { RATE_LIMIT_CONTINUATION } from "./rate-limit-recovery";
 
 export const CONTINUATION =
   "上一轮因账号额度不足而中断，现在已切换账号，请继续之前未完成的工作。先核对当前进度和已有执行结果，再从中断处接着处理，避免重复执行已完成的操作。";
@@ -31,14 +41,26 @@ export type Entry = {
   sourceThreadId?: string;
   sourceTurnId?: string;
   resolved?: boolean;
+  reason?: RecoveryReason;
+  retryAt?: number;
+  autoRetryCount?: number;
 };
 type Turn = {
   id: string;
   startedAt?: number | null;
   completedAt?: number | null;
   status: string;
-  error?: { codexErrorInfo?: unknown };
-  items?: Array<{ type: string; id?: string; clientUserMessageId?: string }>;
+  error?: {
+    codexErrorInfo?: unknown;
+    message?: string;
+    [key: string]: unknown;
+  };
+  items?: Array<{
+    type: string;
+    id?: string;
+    clientId?: string | null;
+    clientUserMessageId?: string;
+  }>;
 };
 type Thread = {
   id: string;
@@ -69,14 +91,6 @@ export type Adapter = {
     beforeSend: () => void,
   ): Promise<{ turn: { id: string } }>;
 };
-function quota(error: unknown): boolean {
-  return (
-    !!error &&
-    typeof error === "object" &&
-    "codexErrorInfo" in error &&
-    error.codexErrorInfo === "usageLimitExceeded"
-  );
-}
 async function bounded<T>(promise: Promise<T>, ms = 20000): Promise<T> {
   let timer: ReturnType<typeof setTimeout>;
   try {
@@ -105,13 +119,36 @@ export class QuotaRecovery {
   private autoQueue = new Map<string, AutoAttempt>();
   private autoRunning: Promise<void> | undefined;
   private idleWaiters = new Set<() => void>();
-  constructor(private file: string) {
+  private autoResumeOn429 = false;
+  private rateGeneration = 0;
+  private disposed = false;
+  private rateChains = new Map<string, RateLimitChain>();
+  private rateTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private rateInFlight = new Set<string>();
+  constructor(
+    private file: string,
+    private clock: RecoveryClock = recoveryClock,
+  ) {
     try {
       const settings = JSON.parse(
         readFileSync(file + ".settings.json", "utf8"),
       );
       this.autoResumeOnAccountSwitch =
         settings.autoResumeOnAccountSwitch === true;
+      this.autoResumeOn429 = settings.autoResumeOn429 === true;
+      for (const [key, chain] of Object.entries(
+        settings.rateLimitChains ?? {},
+      )) {
+        const value = chain as RateLimitChain;
+        if (
+          !Number.isInteger(value.count) ||
+          value.count < 0 ||
+          value.count > 3 ||
+          typeof value.failedTurnId !== "string"
+        )
+          throw Error("限流恢复记录格式错误");
+        this.rateChains.set(key, value);
+      }
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
@@ -125,6 +162,13 @@ export class QuotaRecovery {
           entry.detail = "服务已重启，需核对发送结果";
         }
         this.entries.set(entry.id, entry);
+        if (entry.reason === "rateLimit" && entry.status === "unknown") {
+          const chain = this.rateChains.get(
+            this.key(entry.hostId, entry.threadId),
+          );
+          if (chain && chain.clientUserMessageId === entry.clientUserMessageId)
+            chain.blocked = true;
+        }
       }
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
@@ -132,6 +176,7 @@ export class QuotaRecovery {
   }
   registerHost(host: string, adapter: Adapter) {
     this.hosts.set(host, adapter);
+    if (this.autoResumeOn429) this.startRateScan(host);
   }
   setAutoResume(value: unknown) {
     this.setPreference(value);
@@ -142,16 +187,131 @@ export class QuotaRecovery {
     }
     return this.visibleSnapshot();
   }
-  private setPreference(value: unknown) {
-    if (typeof value !== "boolean") throw Error("无效的自动继续设置");
+  private persistSettings(
+    account = this.autoResumeOnAccountSwitch,
+    rate = this.autoResumeOn429,
+  ) {
     const settings = {
-      autoResumeOnAccountSwitch: value,
+      autoResumeOnAccountSwitch: account,
+      autoResumeOn429: rate,
+      rateLimitChains: Object.fromEntries(this.rateChains),
     };
     const file = this.file + ".settings.json";
     mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
     writeFileSync(file + ".tmp", JSON.stringify(settings), { mode: 0o600 });
     renameSync(file + ".tmp", file);
+  }
+  private setPreference(value: unknown) {
+    if (typeof value !== "boolean") throw Error("无效的自动继续设置");
+    this.persistSettings(value);
     this.autoResumeOnAccountSwitch = value;
+  }
+  setAutoResume429(value: unknown) {
+    if (typeof value !== "boolean") throw Error("无效的自动继续设置");
+    this.persistSettings(this.autoResumeOnAccountSwitch, value);
+    if (value !== this.autoResumeOn429) {
+      this.autoResumeOn429 = value;
+      this.rateGeneration++;
+      this.cancelRateTimers();
+      if (value) for (const host of this.hosts.keys()) this.startRateScan(host);
+    }
+    return this.visibleSnapshot();
+  }
+  private cancelRateTimers() {
+    for (const timer of this.rateTimers.values())
+      this.clock.clearTimeout(timer);
+    this.rateTimers.clear();
+  }
+  // Explicit cleanup is useful to embedders; timers never keep the server alive.
+  dispose() {
+    this.disposed = true;
+    this.rateGeneration++;
+    this.cancelRateTimers();
+  }
+  private startRateScan(host: string) {
+    const generation = this.rateGeneration;
+    const allowed = () =>
+      this.autoResumeOn429 && generation === this.rateGeneration;
+    void (async () => {
+      let cursor: string | null = null;
+      const seen = new Set<string>();
+      do {
+        await this.waitUntilIdle();
+        if (!allowed()) return;
+        while (this.busy || this.scanning) await this.waitUntilIdle();
+        if (!allowed()) return;
+        const adapter = this.hosts.get(host);
+        if (!adapter) return;
+        this.scanning = (async () => {
+          await this.resolveEntries();
+          const page = await bounded(
+            adapter.listThreads(this.historyParams(cursor)),
+          );
+          cursor = page.nextCursor ?? null;
+          await this.discoverCandidates(host, adapter, page.data, allowed);
+          await this.resolveEntries();
+        })().finally(() => {
+          this.scanning = undefined;
+        });
+        await this.scanning;
+        if (!allowed()) return;
+        this.scheduleRateEntries();
+        if (cursor && seen.has(cursor)) throw Error("重复的历史分页游标");
+        if (cursor) seen.add(cursor);
+      } while (cursor);
+    })().catch(() => {
+      this.scanError = "部分任务暂时无法读取，请检查连接后刷新。";
+    });
+  }
+  private scheduleRateEntries() {
+    if (!this.autoResumeOn429 || this.disposed) return;
+    for (const entry of this.entries.values()) {
+      if (
+        entry.reason !== "rateLimit" ||
+        entry.status !== "pending" ||
+        entry.retryAt === undefined ||
+        this.rateTimers.has(entry.id) ||
+        !this.hosts.has(entry.hostId)
+      )
+        continue;
+      const chain = this.rateChains.get(this.key(entry.hostId, entry.threadId));
+      if (!chain || chain.blocked || chain.count >= 3) continue;
+      const generation = this.rateGeneration;
+      const quotaRevision = this.quotaRevision;
+      const timer = this.clock.setTimeout(
+        () => {
+          this.rateTimers.delete(entry.id);
+          void (async () => {
+            await this.waitUntilIdle();
+            if (!this.rateAllowed(entry, generation, quotaRevision)) return;
+            await this.resume([entry.id], undefined, {
+              generation,
+              quotaRevision,
+            });
+          })().catch(() => {
+            this.scanError = "限流任务暂时无法继续，请刷新后检查。";
+          });
+        },
+        Math.max(0, entry.retryAt - this.clock.now()),
+      );
+      timer.unref?.();
+      this.rateTimers.set(entry.id, timer);
+    }
+  }
+  private rateAllowed(entry: Entry, generation: number, quotaRevision: number) {
+    const chain = this.rateChains.get(this.key(entry.hostId, entry.threadId));
+    return (
+      this.autoResumeOn429 &&
+      generation === this.rateGeneration &&
+      quotaRevision === this.quotaRevision &&
+      entry.reason === "rateLimit" &&
+      entry.status === "pending" &&
+      entry.retryAt !== undefined &&
+      entry.retryAt <= this.clock.now() &&
+      !!chain &&
+      !chain.blocked &&
+      chain.count < 3
+    );
   }
   // Called only after the connection has read its usable authenticated principal.
   // Token refreshes and initial connection are baselines, not account switches.
@@ -247,6 +407,7 @@ export class QuotaRecovery {
       .filter(
         (entry) =>
           entry.hostId === attempt.host &&
+          entry.reason !== "rateLimit" &&
           ["pending", "failed"].includes(entry.status),
       )
       .map((entry) => entry.id);
@@ -269,10 +430,35 @@ export class QuotaRecovery {
     thread: string,
     turn: string,
     title = thread,
-    time = Date.now(),
+    time = this.clock.now(),
+    reason: RecoveryReason = "quota",
   ) {
     const id = JSON.stringify([host, thread, turn]);
-    if (this.entries.has(id)) return;
+    const previous = this.entries.get(id);
+    if (previous) {
+      if (
+        reason === "quota" &&
+        previous.reason === "rateLimit" &&
+        !["sending", "unknown", "resumed"].includes(previous.status)
+      ) {
+        previous.reason = "quota";
+        previous.status = "pending";
+        delete previous.retryAt;
+        delete previous.autoRetryCount;
+        this.save();
+      }
+      return;
+    }
+    const key = this.key(host, thread);
+    let chain = this.rateChains.get(key);
+    if (reason === "rateLimit") {
+      if (!chain) {
+        chain = { count: 0, failedTurnId: turn };
+        this.rateChains.set(key, chain);
+      }
+      chain.failedTurnId = turn;
+      this.persistSettings();
+    }
     this.entries.set(id, {
       id,
       hostId: host,
@@ -281,13 +467,120 @@ export class QuotaRecovery {
       title,
       interruptedAt: time,
       status: "pending",
+      reason,
+      ...(reason === "rateLimit"
+        ? {
+            autoRetryCount: chain!.count,
+            retryAt:
+              !chain!.blocked && chain!.count < 3
+                ? Math.max(time, this.clock.now()) +
+                  RATE_LIMIT_DELAYS[chain!.count]!
+                : undefined,
+            detail:
+              chain!.count >= 3 ? "已达到连续自动重试上限（3次）" : undefined,
+          }
+        : {}),
     });
     this.save();
+    this.scheduleRateEntries();
+  }
+  private ownMessage(host: string, thread: string, turn?: Turn) {
+    return (
+      turn?.items?.some(
+        (item) =>
+          item.type === "userMessage" &&
+          [...this.entries.values()].some(
+            (entry) =>
+              entry.hostId === host &&
+              entry.threadId === thread &&
+              !!entry.clientUserMessageId &&
+              (item.clientId === entry.clientUserMessageId ||
+                item.clientUserMessageId === entry.clientUserMessageId ||
+                item.id === entry.clientUserMessageId),
+          ),
+      ) ?? false
+    );
+  }
+  private manualMessage(host: string, thread: string, turn?: Turn) {
+    return (
+      !!turn?.items?.some(
+        (item) =>
+          item.type === "userMessage" &&
+          (item.clientId || item.clientUserMessageId || item.id),
+      ) && !this.ownMessage(host, thread, turn)
+    );
+  }
+  private reconcileRateChain(host: string, thread: Thread) {
+    const key = this.key(host, thread.id);
+    const chain = this.rateChains.get(key);
+    const last = thread.turns?.at(-1);
+    if (!chain || !last || this.rateInFlight.has(key)) return;
+    if (
+      last.status === "completed" ||
+      (last.id !== chain.failedTurnId &&
+        last.id !== chain.continuationTurnId &&
+        this.manualMessage(host, thread.id, last))
+    ) {
+      this.rateChains.delete(key);
+      this.persistSettings();
+    }
   }
   observe(host: string, event: { method: string; params?: any }) {
     const p = event.params;
     if (!p?.threadId) return;
     const key = this.key(host, p.threadId);
+    const turnId = p.turn?.id ?? p.turnId;
+    const reason = recoveryReason(p.turn?.error ?? p.error);
+    const terminal =
+      (event.method === "turn/completed" && p.turn?.status === "failed") ||
+      (event.method === "error" && p.willRetry === false);
+    const chain = this.rateChains.get(key);
+    if (chain) {
+      if (
+        event.method === "turn/started" &&
+        this.rateInFlight.has(key) &&
+        turnId
+      ) {
+        chain.continuationTurnId = turnId;
+        this.persistSettings();
+      }
+      const ownTurn =
+        turnId === chain.continuationTurnId ||
+        this.ownMessage(host, p.threadId, p.turn);
+      const uncertain =
+        !!chain.blocked &&
+        [...this.entries.values()].some(
+          (entry) =>
+            entry.hostId === host &&
+            entry.threadId === p.threadId &&
+            entry.status === "unknown" &&
+            entry.clientUserMessageId === chain.clientUserMessageId,
+        );
+      const confirmedManual = this.manualMessage(host, p.threadId, p.turn);
+      if (
+        event.method === "turn/started" &&
+        !ownTurn &&
+        !this.rateInFlight.has(key) &&
+        (!uncertain || confirmedManual)
+      ) {
+        this.rateChains.delete(key); // A confirmed human/new non-recovery turn resets the chain.
+        this.persistSettings();
+      } else if (
+        event.method === "turn/completed" &&
+        p.turn?.status === "completed" &&
+        (ownTurn || turnId === chain.failedTurnId)
+      ) {
+        this.rateChains.delete(key);
+        this.persistSettings();
+      } else if (
+        event.method === "thread/archived" ||
+        event.method === "thread/deleted" ||
+        (event.method === "turn/completed" && p.turn?.status === "interrupted")
+      ) {
+        chain.blocked = true;
+        this.persistSettings();
+      }
+    }
     if (
       [
         "turn/started",
@@ -297,7 +590,6 @@ export class QuotaRecovery {
       ].includes(event.method)
     ) {
       this.revisions.set(key, (this.revisions.get(key) ?? 0) + 1);
-      let changed = false;
       for (const entry of this.entries.values()) {
         if (
           entry.hostId !== host ||
@@ -306,36 +598,36 @@ export class QuotaRecovery {
         )
           continue;
         if (
-          event.method === "turn/completed" &&
-          p.turn?.id === entry.turnId &&
-          p.turn?.status === "failed" &&
-          quota(p.turn?.error)
+          terminal &&
+          turnId === entry.turnId &&
+          reason === (entry.reason ?? "quota")
         )
           continue;
         entry.status = "skipped";
-        changed = true;
+        delete entry.retryAt;
         entry.detail = "任务状态已变化";
+        const timer = this.rateTimers.get(entry.id);
+        if (timer) this.clock.clearTimeout(timer);
+        this.rateTimers.delete(entry.id);
       }
-      if (changed) this.save();
+      this.save();
     }
-    // Only terminal quota failures qualify; transient retries never enter the queue.
-    if (
-      event.method === "turn/completed" &&
-      p.turn?.status === "failed" &&
-      quota(p.turn.error)
-    ) {
+    if (!terminal || !reason || !turnId) return;
+    if (reason === "quota") {
       this.quotaRevision++;
-      this.add(host, p.threadId, p.turn.id);
+      this.cancelRateTimers();
+      for (const [chainKey, state] of this.rateChains) {
+        state.blocked = true;
+        for (const entry of this.entries.values())
+          if (
+            entry.reason === "rateLimit" &&
+            this.key(entry.hostId, entry.threadId) === chainKey
+          )
+            delete entry.retryAt;
+      }
+      this.persistSettings();
     }
-    if (
-      event.method === "error" &&
-      p.willRetry === false &&
-      quota(p.error) &&
-      p.turnId
-    ) {
-      this.quotaRevision++;
-      this.add(host, p.threadId, p.turnId);
-    }
+    this.add(host, p.threadId, turnId, p.threadId, this.clock.now(), reason);
   }
   snapshot() {
     return {
@@ -346,6 +638,7 @@ export class QuotaRecovery {
       scanning: !!this.scanning,
       scanError: this.scanError,
       autoResumeOnAccountSwitch: this.autoResumeOnAccountSwitch,
+      autoResumeOn429: this.autoResumeOn429,
     };
   }
   async list(refresh = true) {
@@ -424,12 +717,44 @@ export class QuotaRecovery {
         entry.resolved = true;
         continue;
       }
-      if (["unknown", "sending", "resumed"].includes(entry.status)) continue;
+      if (["unknown", "sending", "resumed", "skipped"].includes(entry.status))
+        continue;
       const last = thread.turns?.at(-1);
-      if (!last) {
+      if (
+        !last ||
+        (entry.reason === "rateLimit" &&
+          (last.status !== "failed" ||
+            recoveryReason(last.error) !== "rateLimit"))
+      ) {
         entry.status = "skipped";
         entry.detail = "父任务没有可恢复的回合";
         continue;
+      }
+      const continued = (last.startedAt ?? 0) * 1000 > entry.interruptedAt;
+      if (entry.reason === "rateLimit" && !continued) {
+        this.reconcileRateChain(entry.hostId, thread);
+        const rootKey = this.key(entry.hostId, thread.id);
+        // The directly writable root owns the budget. Child-local metadata must
+        // not revive an old chain or lower the root's backoff.
+        const rootChain = this.rateChains.get(rootKey) ?? {
+          count: 0,
+          failedTurnId: last.id,
+        };
+        this.rateChains.set(rootKey, rootChain);
+        const sourceDelay = RATE_LIMIT_DELAYS[entry.autoRetryCount ?? 0];
+        const retryBase =
+          entry.retryAt !== undefined && sourceDelay !== undefined
+            ? entry.retryAt - sourceDelay
+            : this.clock.now();
+        entry.autoRetryCount = rootChain.count;
+        entry.retryAt =
+          !rootChain.blocked && rootChain.count < 3
+            ? Math.max(
+                entry.retryAt ?? 0,
+                retryBase + RATE_LIMIT_DELAYS[rootChain.count]!,
+              )
+            : undefined;
+        this.persistSettings();
       }
       const oldId = entry.id;
       const id = JSON.stringify([entry.hostId, thread.id, last.id]);
@@ -437,7 +762,6 @@ export class QuotaRecovery {
       const existing = this.entries.get(id);
       this.entries.delete(oldId);
       if (existing) continue;
-      const continued = (last.startedAt ?? 0) * 1000 > entry.interruptedAt;
       this.entries.set(id, {
         ...entry,
         resolved: true,
@@ -498,6 +822,7 @@ export class QuotaRecovery {
             (i) =>
               i.type === "userMessage" &&
               (i.id === entry.clientUserMessageId ||
+                i.clientId === entry.clientUserMessageId ||
                 i.clientUserMessageId === entry.clientUserMessageId),
           ),
         )
@@ -540,15 +865,19 @@ export class QuotaRecovery {
           const item = candidates.shift()!;
           try {
             const thread = await bounded(adapter.readThread(item.id), 5000);
+            if (thread) this.reconcileRateChain(host, thread);
             const last = thread?.turns?.at(-1);
-            if (thread && last?.status === "failed" && quota(last.error))
+            const reason = recoveryReason(last?.error);
+            if (thread && last?.status === "failed" && reason)
               this.add(
                 host,
                 item.id,
                 last.id,
                 thread.name || thread.preview?.slice(0, 100) || item.id,
-                (last.completedAt ?? thread.updatedAt ?? Date.now() / 1000) *
-                  1000,
+                (last.completedAt ??
+                  thread.updatedAt ??
+                  this.clock.now() / 1000) * 1000,
+                reason,
               );
           } catch {
             complete = false;
@@ -591,12 +920,17 @@ export class QuotaRecovery {
         thread.status?.type ?? "",
       ) &&
       last?.id === entry.turnId &&
-      (entry.sourceThreadId
+      (entry.sourceThreadId && entry.reason !== "rateLimit"
         ? ["failed", "completed"].includes(last.status)
-        : last.status === "failed" && quota(last.error))
+        : last.status === "failed" &&
+          recoveryReason(last.error) === (entry.reason ?? "quota"))
     );
   }
-  async resume(ids: unknown, automatic?: AutoAttempt) {
+  async resume(
+    ids: unknown,
+    automatic?: AutoAttempt,
+    rateAttempt?: { generation: number; quotaRevision: number },
+  ) {
     if (!Array.isArray(ids) || !ids.every((i) => typeof i === "string"))
       throw Error("无效的任务列表");
     if (this.busy) return this.visibleSnapshot();
@@ -612,6 +946,16 @@ export class QuotaRecovery {
         if (automatic && !this.autoAllowed(automatic)) break;
         const entry = this.entries.get(id);
         if (!entry || !["pending", "failed"].includes(entry.status)) continue;
+        if (automatic && entry.reason === "rateLimit") continue;
+        if (
+          rateAttempt &&
+          !this.rateAllowed(
+            entry,
+            rateAttempt.generation,
+            rateAttempt.quotaRevision,
+          )
+        )
+          continue;
         if (automatic?.attempted.has(entry.id)) continue;
         automatic?.attempted.add(entry.id);
         const adapter = this.hosts.get(entry.hostId);
@@ -623,6 +967,7 @@ export class QuotaRecovery {
         let stage = "检查归档状态";
         let dispatched = false;
         let attemptOpen = true;
+        let cancelledByRatePreference = false;
         const key = this.key(entry.hostId, entry.threadId);
         const revision = this.revisions.get(key) ?? 0;
         const sourceKey = entry.sourceThreadId
@@ -645,7 +990,7 @@ export class QuotaRecovery {
               !last ||
               last.id !== entry.sourceTurnId ||
               last.status !== "failed" ||
-              !quota(last.error)
+              recoveryReason(last.error) !== (entry.reason ?? "quota")
             ) {
               entry.status = "skipped";
               entry.detail = "子任务状态已变化";
@@ -681,12 +1026,19 @@ export class QuotaRecovery {
           }
           stage = "准备发送";
           const messageId = randomUUID();
-          await bounded(
+          const result = await bounded(
             adapter.startTurn(
               {
                 threadId: entry.threadId,
                 input: [
-                  { type: "text", text: CONTINUATION, text_elements: [] },
+                  {
+                    type: "text",
+                    text:
+                      entry.reason === "rateLimit"
+                        ? RATE_LIMIT_CONTINUATION
+                        : CONTINUATION,
+                    text_elements: [],
+                  },
                 ],
                 clientUserMessageId: messageId,
               },
@@ -696,10 +1048,47 @@ export class QuotaRecovery {
                   revision !== (this.revisions.get(key) ?? 0) ||
                   sourceRevision !== (this.revisions.get(sourceKey) ?? 0) ||
                   this.quotaRevision !== quotaRevision ||
-                  (automatic && !this.autoAllowed(automatic))
+                  (automatic && !this.autoAllowed(automatic)) ||
+                  !["pending", "failed"].includes(entry.status)
                 )
                   throw Error("任务状态已变化，请刷新列表");
+                if (
+                  rateAttempt &&
+                  !this.rateAllowed(
+                    entry,
+                    rateAttempt.generation,
+                    rateAttempt.quotaRevision,
+                  )
+                ) {
+                  cancelledByRatePreference =
+                    !this.autoResumeOn429 ||
+                    rateAttempt.generation !== this.rateGeneration;
+                  throw Error("自动继续设置已变化");
+                }
+                if (!automatic && !rateAttempt && this.rateChains.has(key)) {
+                  this.rateChains.set(key, {
+                    count: 0,
+                    failedTurnId: entry.turnId,
+                  });
+                  entry.autoRetryCount = 0;
+                  this.persistSettings();
+                }
+                if (rateAttempt) {
+                  const chain = this.rateChains.get(key)!;
+                  chain.count++;
+                  chain.clientUserMessageId = messageId;
+                  delete chain.continuationTurnId;
+                  entry.autoRetryCount = chain.count;
+                  this.persistSettings(); // Consume budget before any possible write to the transport.
+                }
+                const chain = this.rateChains.get(key);
+                if (chain) {
+                  chain.clientUserMessageId = messageId;
+                  this.persistSettings();
+                  this.rateInFlight.add(key);
+                }
                 entry.status = "sending";
+                delete entry.retryAt;
                 entry.clientUserMessageId = messageId;
                 delete entry.detail;
                 this.save(); // Persist before dispatch. A crash or timeout must never cause an automatic replay.
@@ -708,20 +1097,51 @@ export class QuotaRecovery {
             ),
             45000,
           );
+          if (this.rateChains.has(key)) {
+            const chain = this.rateChains.get(key);
+            if (chain) {
+              chain.continuationTurnId = result.turn.id;
+              this.persistSettings();
+            }
+          }
           entry.status = "resumed";
           entry.detail = "已开始继续";
           this.save();
           // Give immediate quota failures time to arrive before dispatching the next task.
-          await new Promise((resolve) => setTimeout(resolve, 1500));
+          if (!rateAttempt)
+            await new Promise((resolve) => setTimeout(resolve, 1500));
         } catch (error) {
           attemptOpen = false;
+          if (
+            !dispatched &&
+            cancelledByRatePreference &&
+            entry.status === "pending" &&
+            revision === (this.revisions.get(key) ?? 0) &&
+            sourceRevision === (this.revisions.get(sourceKey) ?? 0) &&
+            this.quotaRevision === quotaRevision
+          ) {
+            // A preference cancellation did not attempt delivery. Keep its
+            // original deadline and budget so enabling can resume the wait.
+            entry.detail = "自动继续已暂停";
+            this.save();
+            continue;
+          }
           entry.status = dispatched ? "unknown" : "failed";
+          delete entry.retryAt;
+          if (dispatched) {
+            const chain = this.rateChains.get(key);
+            if (chain) {
+              chain.blocked = true;
+              this.persistSettings();
+            }
+          }
           entry.detail = dispatched
             ? "发送结果不明，刷新列表核对；不会自动重发"
             : `未发送：${stage}失败，请刷新后重试`;
           this.save();
           if (dispatched) break;
         } finally {
+          this.rateInFlight.delete(key);
           attemptOpen = false;
         }
       }
@@ -730,6 +1150,7 @@ export class QuotaRecovery {
       this.busy = false;
       for (const resolve of this.idleWaiters) resolve();
       this.idleWaiters.clear();
+      this.scheduleRateEntries();
     }
     return this.visibleSnapshot();
   }

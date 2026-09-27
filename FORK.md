@@ -235,13 +235,22 @@ Recheck the helper patch when upgrading Desktop bundles. Relevant checks are
 
 ### Quota interruption recovery
 
-The account menu's “继续中断任务” action lists terminal `usageLimitExceeded`
+The account menu's “继续中断任务” action lists terminal quota and HTTP 429
 failures and sends an explicit continuation message to selected tasks.
 The “换号后自动继续中断任务” setting defaults to off and continues
 quota-interrupted tasks after the connection confirms a different authenticated
 account. Initial login and same-account token refresh do not trigger it. Automatic
 discovery walks all unarchived interactive history pages, including tasks that
 have not been opened in the browser.
+
+The independent “429 后自动继续” setting also defaults to off. After a terminal
+rate-limit failure it waits 60, 120, then 300 seconds before sending a continuation
+message, with at most three consecutive automatic continuations. Each message
+starts a new turn; this does not change Codex's internal request retries. Native
+retries still in progress and quota exhaustion are excluded. Retry counts persist
+across restarts and toggling the setting; a successful or manually started turn
+starts a new retry sequence. Turning the setting off cancels pending automatic
+sends. Unknown delivery is never automatically replayed.
 
 The manual list request checks the 100 most recently updated unarchived interactive
 threads. Settings are shared across tabs and persist alongside the queue in
@@ -262,5 +271,5 @@ only when the unique client message ID appears in history. A crash during dispat
 also becomes unknown. A new quota failure pauses the remaining batch when observed.
 The menu and main-process patches must be reapplied on Desktop bundle upgrades.
 Validate with `npm run build:server`,
-`node --test tests/quota-recovery.test.cjs tests/quota-account-hook.test.cjs`
+`node --test tests/quota-recovery.test.cjs tests/quota-account-hook.test.cjs tests/rate-limit-recovery.test.cjs`
 and `npm run build:browser`.

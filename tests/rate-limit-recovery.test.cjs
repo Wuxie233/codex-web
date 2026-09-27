@@ -1,0 +1,605 @@
+const { test } = require("node:test");
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
+const {
+  QuotaRecovery,
+  RATE_LIMIT_CONTINUATION,
+} = require("../src/server/quota-recovery.js");
+const { recoveryReason } = require("../src/server/rate-limit-recovery.js");
+const rate = {
+  codexErrorInfo: { httpConnectionFailed: { httpStatusCode: 429 } },
+};
+const quota = { codexErrorInfo: "usageLimitExceeded" };
+async function flush() {
+  for (let i = 0; i < 12; i++) await new Promise(setImmediate);
+}
+function fixture(t) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-rate-"));
+  const file = path.join(dir, "entries.json");
+  let now = 1000000;
+  const timers = new Set();
+  const clock = {
+    now: () => now,
+    setTimeout(callback, delay) {
+      const timer = {
+        callback,
+        due: now + delay,
+        unref() {
+          this.unreferenced = true;
+        },
+      };
+      timers.add(timer);
+      return timer;
+    },
+    clearTimeout: (timer) => timers.delete(timer),
+  };
+  const threads = new Map(),
+    sent = [],
+    archived = new Set();
+  const f = { file, clock, threads, sent, archived, timers };
+  const adapter = {
+    async readThread(id) {
+      return threads.get(id) ?? null;
+    },
+    async listThreads(params) {
+      return {
+        data: [...threads.values()].filter(
+          (x) => archived.has(x.id) === params.archived,
+        ),
+      };
+    },
+    async resumeThread(id) {
+      threads.get(id).status = { type: "idle" };
+    },
+    async startTurn(params, beforeSend) {
+      beforeSend();
+      sent.push(params);
+      const turn = {
+        id: `auto-${sent.length}`,
+        status: "inProgress",
+        items: [
+          {
+            type: "userMessage",
+            id: `server-item-${sent.length}`,
+            clientId: params.clientUserMessageId,
+          },
+        ],
+      };
+      threads.get(params.threadId).turns.push(turn);
+      f.recovery.observe("local", {
+        method: "turn/started",
+        params: { threadId: params.threadId, turn },
+      });
+      return { turn };
+    },
+  };
+  f.adapter = adapter;
+  f.recovery = new QuotaRecovery(file, clock);
+  f.recovery.registerHost("local", adapter);
+  f.fail = (id = "one", turnId = "initial", error = rate) => {
+    let thread = threads.get(id);
+    const turn = { id: turnId, status: "failed", error, items: [] };
+    if (!thread) {
+      thread = { id, status: { type: "idle" }, turns: [] };
+      threads.set(id, thread);
+    }
+    const existing = thread.turns.find((x) => x.id === turnId);
+    if (existing) {
+      turn.items = existing.items;
+      Object.assign(existing, turn);
+    } else thread.turns.push(turn);
+    thread.status = { type: "idle" };
+    f.recovery.observe("local", {
+      method: "turn/completed",
+      params: { threadId: id, turn },
+    });
+    return f.recovery
+      .snapshot()
+      .entries.find((x) => x.threadId === id && x.turnId === turnId);
+  };
+  f.advance = async (ms) => {
+    now += ms;
+    for (const timer of [...timers])
+      if (timer.due <= now) {
+        timers.delete(timer);
+        timer.callback();
+      }
+    await flush();
+  };
+  f.reload = () => {
+    f.recovery.dispose();
+    f.recovery = new QuotaRecovery(file, clock);
+    f.recovery.registerHost("local", adapter);
+    return f.recovery;
+  };
+  t.after(async () => {
+    f.recovery.dispose();
+    await flush();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+  return f;
+}
+
+test("429 classification follows structured protocol and gives quota precedence", () => {
+  for (const variant of [
+    "httpConnectionFailed",
+    "responseStreamConnectionFailed",
+    "responseStreamDisconnected",
+    "responseTooManyFailedAttempts",
+  ]) {
+    assert.equal(
+      recoveryReason({
+        codexErrorInfo: { [variant]: { httpStatusCode: 429 } },
+      }),
+      "rateLimit",
+    );
+    assert.equal(
+      recoveryReason({
+        codexErrorInfo: { [variant]: { httpStatusCode: 503 } },
+        message: "HTTP 429 earlier",
+      }),
+      undefined,
+    );
+  }
+  assert.equal(
+    recoveryReason({ codexErrorInfo: "rateLimitExceeded" }),
+    "rateLimit",
+  );
+  assert.equal(
+    recoveryReason({ message: "unexpected status 429 Too Many Requests" }),
+    "rateLimit",
+  );
+  assert.equal(
+    recoveryReason({ message: "HTTP 429 insufficient_quota" }),
+    "quota",
+  );
+  assert.equal(
+    recoveryReason({ message: "HTTP 429 usage_limit_reached" }),
+    "quota",
+  );
+  assert.equal(recoveryReason({ ...quota, message: "HTTP 429" }), "quota");
+  assert.equal(
+    recoveryReason({
+      codexErrorInfo: "unauthorized",
+      message: "HTTP 429 earlier",
+    }),
+    undefined,
+  );
+  assert.equal(
+    recoveryReason({ message: "task number 429 failed" }),
+    undefined,
+  );
+});
+
+test("default off, independent durable toggles, invalid setting is rejected", async (t) => {
+  const f = fixture(t);
+  f.fail();
+  assert.equal(f.recovery.snapshot().autoResumeOn429, false);
+  await f.advance(600000);
+  assert.equal(f.sent.length, 0);
+  f.recovery.setAutoResume(true);
+  f.recovery.setAutoResume429(true);
+  f.recovery.setAutoResume(false);
+  assert.throws(() => f.recovery.setAutoResume429("true"), /设置/);
+  f.reload();
+  assert.equal(f.recovery.snapshot().autoResumeOn429, true);
+  assert.equal(f.recovery.snapshot().autoResumeOnAccountSwitch, false);
+  await flush();
+});
+
+test("only terminal 429 enters queue, duplicate error and completion schedule once", async (t) => {
+  const f = fixture(t);
+  f.recovery.setAutoResume429(true);
+  await flush();
+  f.recovery.observe("local", {
+    method: "error",
+    params: {
+      threadId: "one",
+      turnId: "initial",
+      error: rate,
+      willRetry: true,
+    },
+  });
+  assert.equal(f.recovery.snapshot().entries.length, 0);
+  f.fail();
+  f.recovery.observe("local", {
+    method: "error",
+    params: {
+      threadId: "one",
+      turnId: "initial",
+      error: rate,
+      willRetry: false,
+    },
+  });
+  f.fail();
+  assert.equal(f.recovery.snapshot().entries.length, 1);
+  assert.equal(f.timers.size, 1);
+  assert.ok([...f.timers][0].unreferenced);
+  await f.advance(59999);
+  assert.equal(f.sent.length, 0);
+  await f.advance(1);
+  assert.equal(f.sent.length, 1);
+  assert.equal(f.sent[0].input[0].text, RATE_LIMIT_CONTINUATION);
+  assert.doesNotMatch(f.sent[0].input[0].text, /切换账号/);
+});
+
+test("60/120/300 seconds and max three persist across rapid started/completed, restart and toggles", async (t) => {
+  const f = fixture(t);
+  f.fail();
+  f.recovery.setAutoResume429(true);
+  await flush();
+  f.adapter.startTurn = async (params, beforeSend) => {
+    beforeSend();
+    f.sent.push(params);
+    const turn = {
+      id: `auto-${f.sent.length}`,
+      status: "inProgress",
+      items: [],
+    };
+    f.threads.get("one").turns.push(turn);
+    f.recovery.observe("local", {
+      method: "turn/started",
+      params: { threadId: "one", turn },
+    });
+    f.fail("one", turn.id); // Notification arrives before the start response.
+    return { turn };
+  };
+  await f.advance(60000);
+  assert.equal(f.sent.length, 1);
+  f.recovery.setAutoResume429(false);
+  assert.equal(f.timers.size, 0);
+  f.recovery.setAutoResume429(true);
+  await flush();
+  f.reload();
+  await flush();
+  await f.advance(119999);
+  assert.equal(f.sent.length, 1);
+  await f.advance(1);
+  assert.equal(f.sent.length, 2);
+  await f.advance(299999);
+  assert.equal(f.sent.length, 2);
+  await f.advance(1);
+  assert.equal(f.sent.length, 3);
+  f.reload();
+  await flush();
+  f.recovery.setAutoResume429(false);
+  f.recovery.setAutoResume429(true);
+  await flush();
+  await f.advance(999999);
+  assert.equal(f.sent.length, 3);
+  assert.equal(
+    f.recovery.snapshot().entries.find((e) => e.turnId === "auto-3")
+      .autoRetryCount,
+    3,
+  );
+});
+
+test("manual new turn and successful completion reset the consecutive budget", async (t) => {
+  const f = fixture(t);
+  f.fail();
+  f.recovery.setAutoResume429(true);
+  await flush();
+  await f.advance(60000);
+  f.fail("one", "auto-1");
+  const manual = {
+    id: "manual",
+    status: "inProgress",
+    items: [{ type: "userMessage", id: "human-message" }],
+  };
+  f.threads.get("one").turns.push(manual);
+  f.recovery.observe("local", {
+    method: "turn/started",
+    params: { threadId: "one", turn: manual },
+  });
+  const next = f.fail("one", "manual");
+  assert.equal(next.autoRetryCount, 0);
+  await f.advance(60000);
+  assert.equal(f.sent.length, 2);
+  f.recovery.observe("local", {
+    method: "turn/completed",
+    params: { threadId: "one", turn: { id: "auto-2", status: "completed" } },
+  });
+  const afterSuccess = f.fail("one", "later");
+  assert.equal(afterSuccess.autoRetryCount, 0);
+});
+
+test("unknown delivery blocks later automatic turns and survives restart", async (t) => {
+  const f = fixture(t);
+  f.fail();
+  f.recovery.setAutoResume429(true);
+  await flush();
+  f.adapter.startTurn = async (params, beforeSend) => {
+    beforeSend();
+    f.sent.push(params);
+    throw Error("connection lost after write");
+  };
+  await f.advance(60000);
+  assert.equal(f.recovery.snapshot().entries[0].status, "unknown");
+  f.recovery.observe("local", {
+    method: "turn/started",
+    params: {
+      threadId: "one",
+      turn: {
+        id: "late",
+        items: [
+          {
+            type: "userMessage",
+            id: "server-late",
+            clientId: f.sent[0].clientUserMessageId,
+          },
+        ],
+      },
+    },
+  });
+  f.fail("one", "late");
+  f.reload();
+  await flush();
+  await f.advance(999999);
+  assert.equal(f.sent.length, 1);
+});
+
+test("archive, active, stopped, new turn and new quota block dispatch", async (t) => {
+  for (const state of ["archive", "active", "stopped", "new-turn", "quota"]) {
+    const f = fixture(t);
+    f.fail();
+    f.recovery.setAutoResume429(true);
+    await flush();
+    if (state === "archive") f.archived.add("one");
+    if (state === "active") f.threads.get("one").status.type = "active";
+    if (state === "stopped")
+      f.threads.get("one").turns[0].status = "interrupted";
+    if (state === "new-turn")
+      f.threads.get("one").turns.push({ id: "new", status: "completed" });
+    if (state === "quota") f.fail("other", "quota", quota);
+    await f.advance(60000);
+    assert.equal(f.sent.length, 0, state);
+  }
+});
+
+test("disable during preparation preserves the pending deadline and resumes after enabling", async (t) => {
+  const f = fixture(t);
+  f.fail();
+  f.recovery.setAutoResume429(true);
+  await flush();
+  const originalStart = f.adapter.startTurn;
+  const deadline = f.recovery.snapshot().entries[0].retryAt;
+  f.adapter.startTurn = async (_, beforeSend) => {
+    f.recovery.setAutoResume429(false);
+    beforeSend();
+    assert.fail("disabled dispatch");
+  };
+  await f.advance(60000);
+  assert.equal(f.sent.length, 0);
+  assert.equal(f.recovery.snapshot().entries[0].autoRetryCount, 0);
+  assert.equal(f.recovery.snapshot().entries[0].status, "pending");
+  assert.equal(f.recovery.snapshot().entries[0].retryAt, deadline);
+  f.adapter.startTurn = originalStart;
+  f.recovery.setAutoResume429(true);
+  await flush();
+  await f.advance(0);
+  assert.equal(f.sent.length, 1);
+  assert.equal(f.recovery.snapshot().entries[0].autoRetryCount, 1);
+});
+
+test("enabling scans unopened paginated history without touching completed parents", async (t) => {
+  const f = fixture(t);
+  f.threads.set("history", {
+    id: "history",
+    status: { type: "notLoaded" },
+    turns: [{ id: "old429", status: "failed", error: rate }],
+  });
+  f.threads.set("root", {
+    id: "root",
+    status: { type: "idle" },
+    turns: [{ id: "done", status: "completed" }],
+  });
+  f.threads.set("child", {
+    id: "child",
+    parentThreadId: "root",
+    status: { type: "idle" },
+    turns: [{ id: "child429", status: "failed", error: rate }],
+  });
+  const cursors = [];
+  f.adapter.listThreads = async (params) => {
+    if (params.archived) return { data: [] };
+    cursors.push(params.cursor);
+    return params.cursor
+      ? { data: [...f.threads.values()] }
+      : { data: [], nextCursor: "page2" };
+  };
+  f.recovery.setAutoResume429(true);
+  await flush();
+  assert.deepEqual(cursors, [null, "page2"]);
+  await f.advance(60000);
+  assert.deepEqual(
+    f.sent.map((x) => x.threadId),
+    ["history"],
+  );
+});
+
+test("account auto continuation never dispatches 429 and quota replaces ambiguous 429 classification", async (t) => {
+  const f = fixture(t);
+  f.fail();
+  f.recovery.setAutoResume(true);
+  await f.recovery.accountChanged("local", { accountId: "a", userId: "a" });
+  await f.recovery.accountChanged("local", { accountId: "b", userId: "b" });
+  assert.equal(f.sent.length, 0);
+  f.fail("one", "initial", quota);
+  assert.equal(f.recovery.snapshot().entries[0].reason, "quota");
+  assert.equal(f.recovery.snapshot().entries[0].status, "pending");
+});
+
+test("manual menu continuation resets an exhausted budget only when dispatched", async (t) => {
+  const real = global.setTimeout;
+  t.mock.method(global, "setTimeout", (callback, delay, ...args) =>
+    real(callback, delay === 1500 ? 0 : delay, ...args),
+  );
+  const f = fixture(t);
+  f.fail();
+  f.recovery.setAutoResume429(true);
+  await flush();
+  for (const delay of [60000, 120000, 300000]) {
+    await f.advance(delay);
+    f.fail("one", `auto-${f.sent.length}`);
+  }
+  const exhausted = f.recovery
+    .snapshot()
+    .entries.find((e) => e.turnId === "auto-3");
+  assert.equal(exhausted.autoRetryCount, 3);
+  await f.recovery.resume([exhausted.id]);
+  f.fail("one", "auto-4");
+  assert.equal(
+    f.recovery.snapshot().entries.find((e) => e.turnId === "auto-4")
+      .autoRetryCount,
+    0,
+  );
+  await f.advance(60000);
+  assert.equal(f.sent.length, 5);
+});
+
+test("offline human turn starts a fresh budget, but offline automatic failure preserves it", async (t) => {
+  for (const human of [true, false]) {
+    const f = fixture(t);
+    f.fail();
+    f.recovery.setAutoResume429(true);
+    await flush();
+    for (const delay of [60000, 120000, 300000]) {
+      await f.advance(delay);
+      f.fail("one", `auto-${f.sent.length}`);
+    }
+    if (human)
+      f.threads.get("one").turns.push({
+        id: "offline-human",
+        status: "failed",
+        error: rate,
+        items: [
+          {
+            type: "userMessage",
+            id: "server-human",
+            clientId: "human-client",
+          },
+        ],
+      });
+    f.reload();
+    await flush();
+    await f.advance(60000);
+    assert.equal(f.sent.length, human ? 4 : 3);
+  }
+});
+
+test("old unknown ledger does not block a confirmed new human chain after restart", async (t) => {
+  const f = fixture(t);
+  f.fail();
+  f.recovery.setAutoResume429(true);
+  await flush();
+  const originalStart = f.adapter.startTurn;
+  f.adapter.startTurn = async (params, beforeSend) => {
+    beforeSend();
+    f.sent.push(params);
+    throw Error("unknown");
+  };
+  await f.advance(60000);
+  const human = {
+    id: "new-human",
+    status: "inProgress",
+    items: [
+      { type: "userMessage", id: "server-human", clientId: "human-client" },
+    ],
+  };
+  f.threads.get("one").turns.push(human);
+  f.recovery.observe("local", {
+    method: "turn/started",
+    params: { threadId: "one", turn: human },
+  });
+  f.fail("one", human.id);
+  f.adapter.startTurn = originalStart;
+  f.reload();
+  await flush();
+  await f.advance(60000);
+  assert.equal(f.sent.length, 2);
+});
+
+test("child mapping uses root budget and backoff, excludes stale skipped children", async (t) => {
+  const f = fixture(t);
+  f.fail("root", "initial");
+  f.recovery.setAutoResume429(true);
+  await flush();
+  await f.advance(60000);
+  f.fail("root", "auto-1");
+  await f.advance(120000);
+  const root = f.threads.get("root");
+  root.turns.at(-1).status = "failed";
+  root.turns.at(-1).error = rate;
+  f.fail("child", "child-fail");
+  f.threads.get("child").parentThreadId = "root";
+  await f.recovery.list();
+  const mapped = f.recovery
+    .snapshot()
+    .entries.find((e) => e.threadId === "root" && e.turnId === "auto-2");
+  assert.equal(mapped.autoRetryCount, 2);
+  await f.advance(60000);
+  assert.equal(f.sent.length, 2);
+  await f.advance(240000);
+  assert.equal(f.sent.length, 3);
+});
+
+test("quota during sending permanently pauses the automatic 429 chain without resetting count", async (t) => {
+  const f = fixture(t);
+  f.fail();
+  f.recovery.setAutoResume429(true);
+  await flush();
+  const start = f.adapter.startTurn;
+  f.adapter.startTurn = async (...args) => {
+    const result = await start(...args);
+    f.fail("other", "quota", quota);
+    f.fail("one", result.turn.id);
+    return result;
+  };
+  await f.advance(60000);
+  f.reload();
+  await flush();
+  await f.advance(999999);
+  assert.equal(f.sent.length, 1);
+  assert.equal(
+    f.recovery.snapshot().entries.find((e) => e.turnId === "auto-1")
+      .autoRetryCount,
+    1,
+  );
+});
+
+test("late state changes during transport preparation prevent a 429 continuation", async (t) => {
+  const f = fixture(t);
+  f.fail();
+  f.recovery.setAutoResume429(true);
+  await flush();
+  f.adapter.startTurn = async (_, beforeSend) => {
+    f.recovery.observe("local", {
+      method: "turn/started",
+      params: { threadId: "one", turn: { id: "human", items: [] } },
+    });
+    beforeSend();
+    assert.fail("must not send");
+  };
+  await f.advance(60000);
+  assert.equal(f.sent.length, 0);
+});
+
+test("a child timer remapped during dispatch cannot bypass the root 300-second delay", async (t) => {
+  const f = fixture(t);
+  f.fail("root", "initial");
+  f.recovery.setAutoResume429(true);
+  await flush();
+  await f.advance(60000);
+  f.fail("root", "auto-1");
+  await f.advance(120000);
+  f.threads.get("root").turns.at(-1).status = "failed";
+  f.threads.get("root").turns.at(-1).error = rate;
+  f.fail("child", "child-fail");
+  f.threads.get("child").parentThreadId = "root";
+  await f.advance(60000);
+  assert.equal(f.sent.length, 2);
+  await f.advance(240000);
+  assert.equal(f.sent.length, 3);
+});

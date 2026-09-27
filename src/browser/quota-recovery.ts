@@ -7,15 +7,19 @@ type RecoveryEntry = {
   interruptedAt: number | string;
   status: "pending" | "sending" | "resumed" | "skipped" | "failed" | "unknown";
   detail?: string;
+  reason?: "quota" | "rateLimit";
+  retryAt?: number;
+  autoRetryCount?: number;
 };
 type RecoverySnapshot = {
   entries: RecoveryEntry[];
   busy: boolean;
   autoResumeOnAccountSwitch: boolean;
+  autoResumeOn429: boolean;
   scanning?: boolean;
   scanError?: string;
 };
-type RecoverySetting = "autoResumeOnAccountSwitch";
+type RecoverySetting = "autoResumeOnAccountSwitch" | "autoResumeOn429";
 const settings: {
   key: RecoverySetting;
   channel: string;
@@ -27,6 +31,13 @@ const settings: {
     channel: "quota-recovery:set-auto-resume",
     label: "换号后自动继续中断任务",
     description: "换号成功后，自动继续全部因额度不足中断的任务。",
+  },
+  {
+    key: "autoResumeOn429",
+    channel: "quota-recovery:set-auto-resume-429",
+    label: "429 后自动继续",
+    description:
+      "遇到 429 限流中断后，等待一段时间自动补发一条继续消息；连续中断最多自动继续 3 次。",
   },
 ];
 type Invoke = (channel: string, ...args: unknown[]) => Promise<unknown>;
@@ -49,6 +60,7 @@ export function installQuotaRecovery(invoke: Invoke): void {
     entries: [],
     busy: false,
     autoResumeOnAccountSwitch: false,
+    autoResumeOn429: false,
   };
   let known = false;
   let settingKnown = false;
@@ -84,7 +96,8 @@ export function installQuotaRecovery(invoke: Invoke): void {
       !next ||
       !Array.isArray(next.entries) ||
       typeof next.busy !== "boolean" ||
-      typeof next.autoResumeOnAccountSwitch !== "boolean"
+      typeof next.autoResumeOnAccountSwitch !== "boolean" ||
+      typeof next.autoResumeOn429 !== "boolean"
     ) {
       throw new Error("Invalid quota recovery response");
     }
@@ -149,10 +162,11 @@ export function installQuotaRecovery(invoke: Invoke): void {
       (snapshot.scanning ? "正在检查中断任务，已找到的任务会陆续显示…" : "") ||
       (loading && !known
         ? "正在读取中断任务…"
-        : totals.join("，") || "没有因额度不足中断的任务。");
+        : totals.join("，") || "没有因额度不足或 429 限流中断的任务。");
     notice.setAttribute("role", error ? "alert" : "status");
     const rowsState = JSON.stringify([
       snapshot.entries,
+      snapshot.autoResumeOn429,
       busy,
       loading,
       uncertain,
@@ -184,6 +198,22 @@ export function installQuotaRecovery(invoke: Invoke): void {
         meta.className = "quota-recovery-meta";
         const date = new Date(entry.interruptedAt);
         meta.textContent = `${Number.isNaN(date.getTime()) ? "中断时间未知" : date.toLocaleString()} · ${statusLabels[entry.status] || entry.status}`;
+        if (entry.reason === "rateLimit") {
+          meta.textContent += " · 429 限流";
+          if (typeof entry.autoRetryCount === "number") {
+            meta.textContent += ` · 已自动尝试 ${entry.autoRetryCount}/3 次`;
+          }
+          if (
+            snapshot.autoResumeOn429 &&
+            entry.status === "pending" &&
+            entry.retryAt !== undefined
+          ) {
+            const retryAt = new Date(entry.retryAt);
+            if (!Number.isNaN(retryAt.getTime())) {
+              meta.textContent += ` · 预计 ${retryAt.toLocaleString()} 后自动继续`;
+            }
+          }
+        }
         content.append(title, meta);
         if (entry.detail || entry.status === "unknown") {
           const detail = document.createElement("span");
@@ -306,7 +336,7 @@ export function installQuotaRecovery(invoke: Invoke): void {
     title.textContent = "继续中断任务";
     const description = document.createElement("p");
     description.textContent =
-      "换好账号后，选择因额度不足中断的任务，统一发送继续消息。";
+      "选择因额度不足或 429 限流中断的任务，统一发送继续消息。额度不足时，请先换好账号。";
     const settingRows = document.createElement("div");
     settingInputs.clear();
     for (const { key, channel, label, description } of settings) {

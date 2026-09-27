@@ -745,6 +745,10 @@ async function startIpcBridgeServer(options: ServerOptions): Promise<void> {
     recovery.setAutoResume(value),
   );
 
+  ipcMain.handle("quota-recovery:set-auto-resume-429", (_event, value) =>
+    recovery.setAutoResume429(value),
+  );
+
   const module = require(matches[0]!);
   module.runMainAppStartup();
 }
