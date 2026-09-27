@@ -21,9 +21,14 @@ export type Entry = {
   status: Status;
   detail?: string;
   clientUserMessageId?: string;
+  sourceThreadId?: string;
+  sourceTurnId?: string;
+  resolved?: boolean;
 };
 type Turn = {
   id: string;
+  startedAt?: number | null;
+  completedAt?: number | null;
   status: string;
   error?: { codexErrorInfo?: unknown };
   items?: Array<{ type: string; id?: string; clientUserMessageId?: string }>;
@@ -35,6 +40,10 @@ type Thread = {
   cwd?: string;
   path?: string;
   updatedAt?: number;
+  parentThreadId?: string | null;
+  source?:
+    | string
+    | { subagent?: string | { thread_spawn?: { parent_thread_id?: string } } };
   canAcceptDirectInput?: boolean;
   status?: { type: string };
   turns?: Turn[];
@@ -210,14 +219,114 @@ export class QuotaRecovery {
     }
     // Return available records promptly while history discovery continues.
     if (this.scanning) await bounded(this.scanning, 1000).catch(() => {});
-    return this.snapshot();
+    return this.visibleSnapshot();
+  }
+  private visibleSnapshot() {
+    const snapshot = this.snapshot();
+    const seen = new Set<string>();
+    snapshot.entries = snapshot.entries.filter((entry) => {
+      const key = this.key(entry.hostId, entry.threadId);
+      if (!entry.resolved || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+    return snapshot;
+  }
+  private parent(thread: Thread): string | undefined {
+    if (thread.parentThreadId) return thread.parentThreadId;
+    const source = thread.source;
+    if (
+      source &&
+      typeof source === "object" &&
+      typeof source.subagent === "object"
+    )
+      return source.subagent.thread_spawn?.parent_thread_id;
+    return undefined;
+  }
+  private isChild(thread: Thread) {
+    return (
+      !!this.parent(thread) ||
+      (typeof thread.source === "object" && !!thread.source?.subagent) ||
+      thread.source === "subagent"
+    );
+  }
+  private async resolveEntries() {
+    const aliases = new Map<string, string>();
+    for (const entry of [...this.entries.values()]) {
+      if (entry.resolved) continue;
+      const adapter = this.hosts.get(entry.hostId);
+      if (!adapter) continue;
+      let thread = await bounded(adapter.readThread(entry.threadId)).catch(
+        () => null,
+      );
+      if (!thread) continue;
+      const seen = new Set<string>();
+      while (this.isChild(thread)) {
+        const parent = this.parent(thread);
+        if (!parent || seen.has(parent) || seen.size >= 32) {
+          entry.status = "skipped";
+          entry.detail = "无法确认父任务";
+          break;
+        }
+        seen.add(thread.id);
+        const next = await bounded(adapter.readThread(parent)).catch(
+          () => null,
+        );
+        if (!next) break;
+        thread = next;
+      }
+      if (this.isChild(thread)) continue;
+      entry.title =
+        thread.name || thread.preview?.slice(0, 100) || "未命名任务";
+      if (thread.id === entry.threadId) {
+        entry.resolved = true;
+        continue;
+      }
+      if (["unknown", "sending", "resumed"].includes(entry.status)) continue;
+      const last = thread.turns?.at(-1);
+      if (!last) {
+        entry.status = "skipped";
+        entry.detail = "父任务没有可恢复的回合";
+        continue;
+      }
+      const oldId = entry.id;
+      const id = JSON.stringify([entry.hostId, thread.id, last.id]);
+      aliases.set(oldId, id);
+      const existing = this.entries.get(id);
+      this.entries.delete(oldId);
+      if (existing) continue;
+      const continued = (last.startedAt ?? 0) * 1000 > entry.interruptedAt;
+      this.entries.set(id, {
+        ...entry,
+        resolved: true,
+        id,
+        threadId: thread.id,
+        turnId: last.id,
+        sourceThreadId: entry.sourceThreadId ?? entry.threadId,
+        sourceTurnId: entry.sourceTurnId ?? entry.turnId,
+        // A later parent turn means the user has already continued this task.
+        status: continued ? "skipped" : entry.status,
+        detail: continued ? "父任务已继续" : entry.detail,
+      });
+    }
+    this.save();
+    return aliases;
   }
   private async discover() {
+    await this.resolveEntries();
     for (const [host, adapter] of this.hosts) {
       if (this.discovered.has(host)) continue;
       const page = await bounded(
         adapter.listThreads({
           archived: false,
+          sourceKinds: [
+            "cli",
+            "vscode",
+            "exec",
+            "appServer",
+            "subAgentThreadSpawn",
+          ],
+          useStateDbOnly: true,
           cursor: null,
           limit: 100,
           sortKey: "updated_at",
@@ -235,21 +344,18 @@ export class QuotaRecovery {
         Array.from({ length: 4 }, async () => {
           while (candidates.length && !this.busy) {
             const item = candidates.shift()!;
-            if (item.canAcceptDirectInput === false) continue;
+
             try {
               const thread = await bounded(adapter.readThread(item.id), 5000);
               const last = thread?.turns?.at(-1);
-              if (
-                thread?.canAcceptDirectInput !== false &&
-                last?.status === "failed" &&
-                quota(last.error)
-              )
+              if (thread && last?.status === "failed" && quota(last.error))
                 this.add(
                   host,
                   item.id,
                   last.id,
                   thread?.name || thread?.preview?.slice(0, 100) || item.id,
-                  (thread?.updatedAt ?? Date.now() / 1000) * 1000,
+                  (last.completedAt ?? thread?.updatedAt ?? Date.now() / 1000) *
+                    1000,
                 );
             } catch {
               incomplete = true;
@@ -263,6 +369,7 @@ export class QuotaRecovery {
       }
       this.discovered.add(host);
     }
+    await this.resolveEntries();
     // Update titles and reconcile uncertain sends by their unique client message id.
     for (const entry of this.entries.values()) {
       if (!["pending", "failed", "unknown"].includes(entry.status)) continue;
@@ -300,6 +407,8 @@ export class QuotaRecovery {
         await bounded(
           adapter.listThreads({
             archived: true,
+            // Avoid JSONL backfill: even one archive page can exceed the RPC timeout.
+            useStateDbOnly: true,
             cursor,
             limit: 200,
             modelProviders: [],
@@ -316,26 +425,29 @@ export class QuotaRecovery {
     const last = thread?.turns?.at(-1);
     return (
       !!thread &&
+      !this.isChild(thread) &&
       thread.canAcceptDirectInput !== false &&
       ["idle", "notLoaded", "systemError"].includes(
         thread.status?.type ?? "",
       ) &&
       last?.id === entry.turnId &&
-      last.status === "failed" &&
-      quota(last.error)
+      (entry.sourceThreadId
+        ? ["failed", "completed"].includes(last.status)
+        : last.status === "failed" && quota(last.error))
     );
   }
   async resume(ids: unknown) {
-    if (
-      !Array.isArray(ids) ||
-      !ids.every((i) => typeof i === "string")
-    )
+    if (!Array.isArray(ids) || !ids.every((i) => typeof i === "string"))
       throw Error("无效的任务列表");
-    if (this.busy) return this.snapshot();
+    if (this.busy) return this.visibleSnapshot();
     this.busy = true;
     const quotaRevision = this.quotaRevision;
     try {
-      for (const id of new Set<string>(ids)) {
+      if (this.scanning) await this.scanning;
+      const aliases = await this.resolveEntries();
+      for (const id of new Set<string>(
+        ids.map((id) => aliases.get(id) ?? id),
+      )) {
         if (this.quotaRevision !== quotaRevision) break;
         const entry = this.entries.get(id);
         if (!entry || !["pending", "failed"].includes(entry.status)) continue;
@@ -345,15 +457,37 @@ export class QuotaRecovery {
           entry.detail = "任务所在主机未连接";
           continue;
         }
+        let stage = "检查归档状态";
         let dispatched = false;
         let attemptOpen = true;
         const key = this.key(entry.hostId, entry.threadId);
-        let revision = this.revisions.get(key) ?? 0;
+        const revision = this.revisions.get(key) ?? 0;
+        const sourceKey = entry.sourceThreadId
+          ? this.key(entry.hostId, entry.sourceThreadId)
+          : key;
+        const sourceRevision = this.revisions.get(sourceKey) ?? 0;
         try {
           if (await this.archived(adapter, entry.threadId)) {
             entry.status = "skipped";
             entry.detail = "任务已归档";
             continue;
+          }
+          stage = "读取任务";
+          if (entry.sourceThreadId) {
+            const source = await bounded(
+              adapter.readThread(entry.sourceThreadId),
+            );
+            const last = source?.turns?.at(-1);
+            if (
+              !last ||
+              last.id !== entry.sourceTurnId ||
+              last.status !== "failed" ||
+              !quota(last.error)
+            ) {
+              entry.status = "skipped";
+              entry.detail = "子任务状态已变化";
+              continue;
+            }
           }
           let thread = await bounded(adapter.readThread(entry.threadId));
           if (!this.eligible(thread, entry)) {
@@ -364,6 +498,7 @@ export class QuotaRecovery {
           entry.title =
             thread!.name || thread!.preview?.slice(0, 100) || entry.title;
           if (thread!.status?.type === "notLoaded") {
+            stage = "加载任务";
             await bounded(
               adapter.resumeThread(entry.threadId, {
                 cwd: thread!.cwd,
@@ -381,6 +516,7 @@ export class QuotaRecovery {
             entry.detail = "任务状态已变化";
             continue;
           }
+          stage = "准备发送";
           const messageId = randomUUID();
           await bounded(
             adapter.startTurn(
@@ -395,6 +531,7 @@ export class QuotaRecovery {
                 if (
                   !attemptOpen ||
                   revision !== (this.revisions.get(key) ?? 0) ||
+                  sourceRevision !== (this.revisions.get(sourceKey) ?? 0) ||
                   this.quotaRevision !== quotaRevision
                 )
                   throw Error("任务状态已变化，请刷新列表");
@@ -417,7 +554,7 @@ export class QuotaRecovery {
           entry.status = dispatched ? "unknown" : "failed";
           entry.detail = dispatched
             ? "发送结果不明，刷新列表核对；不会自动重发"
-            : "未发送，请检查连接后重试";
+            : `未发送：${stage}失败，请刷新后重试`;
           this.save();
           if (dispatched) break;
         } finally {
@@ -428,6 +565,6 @@ export class QuotaRecovery {
     } finally {
       this.busy = false;
     }
-    return this.snapshot();
+    return this.visibleSnapshot();
   }
 }

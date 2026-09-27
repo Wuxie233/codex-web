@@ -170,13 +170,11 @@ test("ambiguous send never retries, survives restart, then reconciles by client 
   reloaded.registerHost("local", f.adapter);
   await reloaded.resume([id]);
   assert.equal(f.sent.length, 1);
-  f.threads
-    .get("one")
-    .turns.push({
-      id: "continued",
-      status: "inProgress",
-      items: [{ type: "userMessage", id: f.sent[0].clientUserMessageId }],
-    });
+  f.threads.get("one").turns.push({
+    id: "continued",
+    status: "inProgress",
+    items: [{ type: "userMessage", id: f.sent[0].clientUserMessageId }],
+  });
   await reloaded.list();
   assert.equal(reloaded.snapshot().entries[0].status, "resumed");
 });
@@ -301,10 +299,117 @@ test("poll reads the completed snapshot without restarting history scans", async
   const f = fixture(t);
   let reads = 0;
   const original = f.adapter.listThreads;
-  f.adapter.listThreads = async (params) => { reads++; return original(params); };
+  f.adapter.listThreads = async (params) => {
+    reads++;
+    return original(params);
+  };
   await f.recovery.list();
   await f.recovery.list(false);
   await f.recovery.list(false);
   assert.equal(reads, 1);
   assert.equal(f.recovery.snapshot().scanning, false);
+});
+
+test("nested quota failures collapse to the root and continue a completed parent once", async (t) => {
+  const f = fixture(t);
+  f.threads.set("root", {
+    id: "root",
+    name: "Root task",
+    status: { type: "idle" },
+    turns: [{ id: "root-turn", status: "completed" }],
+  });
+  f.threads.set("middle", { id: "middle", parentThreadId: "root" });
+  f.fail("child");
+  f.threads.get("child").parentThreadId = "middle";
+  f.fail("sibling");
+  f.threads.get("sibling").source = {
+    subagent: { thread_spawn: { parent_thread_id: "root" } },
+  };
+  const listed = await f.recovery.list();
+  assert.equal(listed.entries.length, 1);
+  assert.equal(listed.entries[0].threadId, "root");
+  assert.equal(listed.entries[0].title, "Root task");
+  await f.recovery.resume(listed.entries.map((e) => e.id));
+  assert.deepEqual(
+    f.sent.map((x) => x.threadId),
+    ["root"],
+  );
+});
+
+test("an ordinary fork stays independent and unknown subagent ancestry is hidden", async (t) => {
+  const f = fixture(t);
+  f.fail("fork");
+  f.threads.get("fork").forkedFromId = "unrelated";
+  f.fail("unresolved");
+  f.threads.get("unresolved").source = { subagent: "review" };
+  f.fail("cycle");
+  f.threads.get("cycle").parentThreadId = "cycle";
+  const listed = await f.recovery.list();
+  assert.deepEqual(
+    listed.entries.map((e) => e.threadId),
+    ["fork"],
+  );
+  await f.recovery.resume(f.recovery.snapshot().entries.map((e) => e.id));
+  assert.deepEqual(
+    f.sent.map((x) => x.threadId),
+    ["fork"],
+  );
+});
+
+test("all recovery list requests avoid slow rollout backfill", async (t) => {
+  const f = fixture(t);
+  f.fail();
+  const original = f.adapter.listThreads;
+  f.adapter.listThreads = async (params) => {
+    assert.equal(params.useStateDbOnly, true);
+    return original(params);
+  };
+  const listed = await f.recovery.list();
+  await f.recovery.resume(listed.entries.map((e) => e.id));
+  assert.equal(f.sent.length, 1);
+});
+
+test("late child state changes cancel a parent continuation before dispatch", async (t) => {
+  const f = fixture(t);
+  f.threads.set("root", {
+    id: "root",
+    status: { type: "idle" },
+    turns: [{ id: "root-turn", status: "completed" }],
+  });
+  f.fail("child");
+  f.threads.get("child").parentThreadId = "root";
+  f.adapter.startTurn = async (_params, beforeSend) => {
+    f.recovery.observe("local", {
+      method: "turn/started",
+      params: { threadId: "child", turn: { id: "new" } },
+    });
+    beforeSend();
+    assert.fail("must not dispatch");
+  };
+  const listed = await f.recovery.list();
+  const result = await f.recovery.resume(listed.entries.map((e) => e.id));
+  assert.equal(result.entries[0].status, "failed");
+  assert.equal(f.sent.length, 0);
+});
+
+test("parent metadata updates do not count as continuation but a newer turn does", async (t) => {
+  for (const newerTurn of [false, true]) {
+    const f = fixture(t);
+    f.threads.set("root", {
+      id: "root",
+      updatedAt: Date.now() / 1000 + 10,
+      status: { type: "idle" },
+      turns: [
+        {
+          id: "root-turn",
+          status: "completed",
+          startedAt: Date.now() / 1000 + (newerTurn ? 10 : -100),
+        },
+      ],
+    });
+    f.fail("child");
+    f.threads.get("child").parentThreadId = "root";
+    const listed = await f.recovery.list();
+    assert.equal(listed.entries[0].status, newerTurn ? "skipped" : "pending");
+  }
 });
