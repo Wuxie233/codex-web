@@ -244,13 +244,14 @@ discovery walks all unarchived interactive history pages, including tasks that
 have not been opened in the browser.
 
 The independent “429 后自动继续” setting also defaults to off. After a terminal
-rate-limit failure it waits 60, 120, then 300 seconds before sending a continuation
+rate-limit failure it waits 30, 60, then 120 seconds before sending a continuation
 message, with at most three consecutive automatic continuations. Each message
 starts a new turn; this does not change Codex's internal request retries. Native
 retries still in progress and quota exhaustion are excluded. Retry counts persist
-across restarts and toggling the setting; a successful or manually started turn
-starts a new retry sequence. Turning the setting off cancels pending automatic
-sends. Unknown delivery is never automatically replayed.
+across restarts and toggling the setting; one successfully completed turn resets
+the count immediately, and a manually started turn starts a new retry sequence.
+Turning the setting off cancels pending automatic sends. Unknown delivery is
+never automatically replayed.
 
 The manual list request checks the 100 most recently updated unarchived interactive
 threads. Settings are shared across tabs and persist alongside the queue in

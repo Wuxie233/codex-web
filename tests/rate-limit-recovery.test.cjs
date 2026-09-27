@@ -217,7 +217,7 @@ test("only terminal 429 enters queue, duplicate error and completion schedule on
   assert.equal(f.recovery.snapshot().entries.length, 1);
   assert.equal(f.timers.size, 1);
   assert.ok([...f.timers][0].unreferenced);
-  await f.advance(59999);
+  await f.advance(29999);
   assert.equal(f.sent.length, 0);
   await f.advance(1);
   assert.equal(f.sent.length, 1);
@@ -225,7 +225,7 @@ test("only terminal 429 enters queue, duplicate error and completion schedule on
   assert.doesNotMatch(f.sent[0].input[0].text, /切换账号/);
 });
 
-test("60/120/300 seconds and max three persist across rapid started/completed, restart and toggles", async (t) => {
+test("30/60/120 seconds and max three persist across rapid started/completed, restart and toggles", async (t) => {
   const f = fixture(t);
   f.fail();
   f.recovery.setAutoResume429(true);
@@ -246,7 +246,7 @@ test("60/120/300 seconds and max three persist across rapid started/completed, r
     f.fail("one", turn.id); // Notification arrives before the start response.
     return { turn };
   };
-  await f.advance(60000);
+  await f.advance(30000);
   assert.equal(f.sent.length, 1);
   f.recovery.setAutoResume429(false);
   assert.equal(f.timers.size, 0);
@@ -254,11 +254,11 @@ test("60/120/300 seconds and max three persist across rapid started/completed, r
   await flush();
   f.reload();
   await flush();
-  await f.advance(119999);
+  await f.advance(59999);
   assert.equal(f.sent.length, 1);
   await f.advance(1);
   assert.equal(f.sent.length, 2);
-  await f.advance(299999);
+  await f.advance(119999);
   assert.equal(f.sent.length, 2);
   await f.advance(1);
   assert.equal(f.sent.length, 3);
@@ -281,8 +281,9 @@ test("manual new turn and successful completion reset the consecutive budget", a
   f.fail();
   f.recovery.setAutoResume429(true);
   await flush();
-  await f.advance(60000);
-  f.fail("one", "auto-1");
+  await f.advance(30000);
+  const afterStartReceipt = f.fail("one", "auto-1");
+  assert.equal(afterStartReceipt.autoRetryCount, 1); // A start receipt is not a successful completion.
   const manual = {
     id: "manual",
     status: "inProgress",
@@ -295,7 +296,7 @@ test("manual new turn and successful completion reset the consecutive budget", a
   });
   const next = f.fail("one", "manual");
   assert.equal(next.autoRetryCount, 0);
-  await f.advance(60000);
+  await f.advance(30000);
   assert.equal(f.sent.length, 2);
   f.recovery.observe("local", {
     method: "turn/completed",
@@ -303,6 +304,11 @@ test("manual new turn and successful completion reset the consecutive budget", a
   });
   const afterSuccess = f.fail("one", "later");
   assert.equal(afterSuccess.autoRetryCount, 0);
+  assert.equal(afterSuccess.retryAt - f.clock.now(), 30000);
+  await f.advance(29999);
+  assert.equal(f.sent.length, 2);
+  await f.advance(1);
+  assert.equal(f.sent.length, 3);
 });
 
 test("unknown delivery blocks later automatic turns and survives restart", async (t) => {
@@ -315,7 +321,7 @@ test("unknown delivery blocks later automatic turns and survives restart", async
     f.sent.push(params);
     throw Error("connection lost after write");
   };
-  await f.advance(60000);
+  await f.advance(30000);
   assert.equal(f.recovery.snapshot().entries[0].status, "unknown");
   f.recovery.observe("local", {
     method: "turn/started",
@@ -353,7 +359,7 @@ test("archive, active, stopped, new turn and new quota block dispatch", async (t
     if (state === "new-turn")
       f.threads.get("one").turns.push({ id: "new", status: "completed" });
     if (state === "quota") f.fail("other", "quota", quota);
-    await f.advance(60000);
+    await f.advance(30000);
     assert.equal(f.sent.length, 0, state);
   }
 });
@@ -370,7 +376,7 @@ test("disable during preparation preserves the pending deadline and resumes afte
     beforeSend();
     assert.fail("disabled dispatch");
   };
-  await f.advance(60000);
+  await f.advance(30000);
   assert.equal(f.sent.length, 0);
   assert.equal(f.recovery.snapshot().entries[0].autoRetryCount, 0);
   assert.equal(f.recovery.snapshot().entries[0].status, "pending");
@@ -412,7 +418,7 @@ test("enabling scans unopened paginated history without touching completed paren
   f.recovery.setAutoResume429(true);
   await flush();
   assert.deepEqual(cursors, [null, "page2"]);
-  await f.advance(60000);
+  await f.advance(30000);
   assert.deepEqual(
     f.sent.map((x) => x.threadId),
     ["history"],
@@ -440,7 +446,7 @@ test("manual menu continuation resets an exhausted budget only when dispatched",
   f.fail();
   f.recovery.setAutoResume429(true);
   await flush();
-  for (const delay of [60000, 120000, 300000]) {
+  for (const delay of [30000, 60000, 120000]) {
     await f.advance(delay);
     f.fail("one", `auto-${f.sent.length}`);
   }
@@ -455,7 +461,7 @@ test("manual menu continuation resets an exhausted budget only when dispatched",
       .autoRetryCount,
     0,
   );
-  await f.advance(60000);
+  await f.advance(30000);
   assert.equal(f.sent.length, 5);
 });
 
@@ -465,7 +471,7 @@ test("offline human turn starts a fresh budget, but offline automatic failure pr
     f.fail();
     f.recovery.setAutoResume429(true);
     await flush();
-    for (const delay of [60000, 120000, 300000]) {
+    for (const delay of [30000, 60000, 120000]) {
       await f.advance(delay);
       f.fail("one", `auto-${f.sent.length}`);
     }
@@ -484,7 +490,7 @@ test("offline human turn starts a fresh budget, but offline automatic failure pr
       });
     f.reload();
     await flush();
-    await f.advance(60000);
+    await f.advance(30000);
     assert.equal(f.sent.length, human ? 4 : 3);
   }
 });
@@ -500,7 +506,7 @@ test("old unknown ledger does not block a confirmed new human chain after restar
     f.sent.push(params);
     throw Error("unknown");
   };
-  await f.advance(60000);
+  await f.advance(30000);
   const human = {
     id: "new-human",
     status: "inProgress",
@@ -517,7 +523,7 @@ test("old unknown ledger does not block a confirmed new human chain after restar
   f.adapter.startTurn = originalStart;
   f.reload();
   await flush();
-  await f.advance(60000);
+  await f.advance(30000);
   assert.equal(f.sent.length, 2);
 });
 
@@ -526,9 +532,9 @@ test("child mapping uses root budget and backoff, excludes stale skipped childre
   f.fail("root", "initial");
   f.recovery.setAutoResume429(true);
   await flush();
-  await f.advance(60000);
+  await f.advance(30000);
   f.fail("root", "auto-1");
-  await f.advance(120000);
+  await f.advance(60000);
   const root = f.threads.get("root");
   root.turns.at(-1).status = "failed";
   root.turns.at(-1).error = rate;
@@ -539,9 +545,9 @@ test("child mapping uses root budget and backoff, excludes stale skipped childre
     .snapshot()
     .entries.find((e) => e.threadId === "root" && e.turnId === "auto-2");
   assert.equal(mapped.autoRetryCount, 2);
-  await f.advance(60000);
+  await f.advance(30000);
   assert.equal(f.sent.length, 2);
-  await f.advance(240000);
+  await f.advance(90000);
   assert.equal(f.sent.length, 3);
 });
 
@@ -557,7 +563,7 @@ test("quota during sending permanently pauses the automatic 429 chain without re
     f.fail("one", result.turn.id);
     return result;
   };
-  await f.advance(60000);
+  await f.advance(30000);
   f.reload();
   await flush();
   await f.advance(999999);
@@ -582,24 +588,24 @@ test("late state changes during transport preparation prevent a 429 continuation
     beforeSend();
     assert.fail("must not send");
   };
-  await f.advance(60000);
+  await f.advance(30000);
   assert.equal(f.sent.length, 0);
 });
 
-test("a child timer remapped during dispatch cannot bypass the root 300-second delay", async (t) => {
+test("a child timer remapped during dispatch cannot bypass the root 120-second delay", async (t) => {
   const f = fixture(t);
   f.fail("root", "initial");
   f.recovery.setAutoResume429(true);
   await flush();
-  await f.advance(60000);
+  await f.advance(30000);
   f.fail("root", "auto-1");
-  await f.advance(120000);
+  await f.advance(60000);
   f.threads.get("root").turns.at(-1).status = "failed";
   f.threads.get("root").turns.at(-1).error = rate;
   f.fail("child", "child-fail");
   f.threads.get("child").parentThreadId = "root";
-  await f.advance(60000);
+  await f.advance(30000);
   assert.equal(f.sent.length, 2);
-  await f.advance(240000);
+  await f.advance(90000);
   assert.equal(f.sent.length, 3);
 });
