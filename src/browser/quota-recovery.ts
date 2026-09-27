@@ -63,9 +63,15 @@ export function installQuotaRecovery(invoke: Invoke): void {
       throw new Error("Invalid quota recovery response");
     }
     const previous = new Set(snapshot.entries.map((entry) => entry.id));
-    snapshot = next;
+    // Keep completed records in the server ledger for deduplication, not the UI.
+    snapshot = {
+      ...next,
+      entries: next.entries.filter(
+        (entry) => entry.status !== "resumed" && entry.status !== "skipped",
+      ),
+    };
     selected = new Set(
-      next.entries
+      snapshot.entries
         .filter(
           (entry) =>
             selectable(entry) &&

@@ -239,6 +239,8 @@ The account menu's “继续中断任务” action lists terminal `usageLimitExc
 failures and sends an explicit continuation message to selected tasks. Signing in
 never sends messages automatically. The first list request also checks the 100
 most recently updated, unarchived interactive threads for earlier failures.
+The dialog hides resumed and skipped records; the server retains them for
+deduplication. Sending and uncertain results remain visible until resolved.
 
 `src/server/quota-recovery.ts` owns the shared queue, persisted to
 `$CODEX_HOME/codex-web-quota-recovery.json` (default `~/.codex`). The main-process
