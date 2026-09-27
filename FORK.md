@@ -334,3 +334,12 @@ Checks: `npm run build:server`, `node --test tests/browser-preview.test.cjs
 tests/browser-isolation.test.cjs tests/browser-link-routing.test.cjs
 tests/download.test.cjs`, and the actual-browser check
 `tests/browser/native-browser-disabled.cjs` after `npm run build:browser`.
+
+### Browser IPC compression
+
+The IPC WebSocket negotiates per-message deflate for large native RPC snapshots.
+Both directions reset the compression dictionary between messages; small outbound
+messages skip compression and clients without extension support keep the plain transport.
+Origin checks, one-use voice tokens and the decompressed message-size limit still
+apply. `node --test tests/ipc-compression.test.cjs` checks negotiation, plain-client
+fallback, byte-preserving delivery and message ordering over real WebSockets.

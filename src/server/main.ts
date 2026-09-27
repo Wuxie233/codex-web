@@ -437,7 +437,17 @@ async function startIpcBridgeServer(options: ServerOptions): Promise<void> {
   });
   registerBrowserPreviewRoutes(app);
   registerDownloadRoute(app);
-  const websocketServer = new WebSocketServer({ noServer: true });
+  const websocketServer = new WebSocketServer({
+    noServer: true,
+    // Native initialization includes large RPC snapshots; keep them off the wire
+    // uncompressed without retaining a compression dictionary between messages.
+    perMessageDeflate: {
+      serverNoContextTakeover: true,
+      clientNoContextTakeover: true,
+      zlibDeflateOptions: { level: 3 },
+      threshold: 1024,
+    },
+  });
 
   await app.register(fastifyMultipart, {
     limits: {
