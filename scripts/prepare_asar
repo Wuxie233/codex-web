@@ -42,6 +42,7 @@ patch --batch --forward --strip 1 --directory scratch/asar < patches/preload-dis
 patch --batch --forward --strip 1 --directory scratch/asar < patches/webview-safe-header-left.patch
 patch --batch --forward --strip 1 --directory scratch/asar < patches/app-host-json-rpc.patch
 patch --batch --forward --strip 1 --directory scratch/asar < patches/app-host-browser-windows.patch
+patch --batch --forward --strip 1 --directory scratch/asar < patches/main-realtime-browser.patch
 rm -rf scratch/asar/node_modules/better-sqlite3
 
 patch --batch --forward --strip 1 --directory scratch/asar < patches/webview-disable-desktop-mcp.patch
@@ -77,3 +78,5 @@ patch --batch --forward --strip 1 --directory scratch/asar < patches/webview-quo
 
 patch --batch --forward --strip 1 --directory scratch/asar < patches/webview-composer-config-recovery.patch
 patch --batch --forward --strip 1 --directory scratch/asar < patches/webview-fast-mode-loading.patch
+
+patch --batch --forward --strip 1 --directory scratch/asar < patches/webview-realtime-browser.patch

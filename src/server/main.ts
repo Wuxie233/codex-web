@@ -22,6 +22,7 @@ import { rebaseRequestDeadlines } from "./request-deadline";
 import { registerDownloadRoute } from "./download";
 import { QuotaRecovery } from "./quota-recovery";
 import { ipcMain } from "./electron/index";
+import { RealtimeWindows, type RealtimeWindow } from "./realtime-windows";
 
 type ServerOptions = {
   host: string;
@@ -236,14 +237,16 @@ function compareWorkspaceDirectoryEntries(
   );
 }
 
-type RendererWindow = {
-  id: number;
-  webContents: { id: number };
-  destroy: () => void;
+type RendererWindow = RealtimeWindow & {
+  webContents: { id: number; emit(event: string): unknown };
+  emit(event: string): unknown;
 };
 
 type IpcMainBridgeState = {
   setRendererWindowFactory?: (factory: () => Promise<RendererWindow>) => void;
+  attachRealtimeWindow?: (window: RendererWindow, owner: number) => void;
+  closeRealtimeWindow?: (id: number) => boolean;
+  canAttachRealtimeWindow?: (id: number, owner: number) => boolean;
   sendToRenderer?: (
     webContentsId: number,
     message: MainToRendererMessage,
@@ -501,6 +504,17 @@ async function startIpcBridgeServer(options: ServerOptions): Promise<void> {
   });
 
   const rendererSockets = new Map<number, WebSocket>();
+  const realtimeWindows = new RealtimeWindows((owner, message) => {
+    const socket = rendererSockets.get(owner);
+    if (socket?.readyState !== WebSocket.OPEN) return false;
+    socket.send(JSON.stringify(message));
+    return true;
+  });
+  bridgeState.attachRealtimeWindow = (window, owner) =>
+    realtimeWindows.attach(window, owner);
+  bridgeState.closeRealtimeWindow = (id) => realtimeWindows.close(id);
+  bridgeState.canAttachRealtimeWindow = (id, owner) =>
+    realtimeWindows.canAttach(id, owner);
   const rendererWindowFactory = new Promise<() => Promise<RendererWindow>>(
     (resolve) => {
       bridgeState.setRendererWindowFactory = resolve;
@@ -513,19 +527,44 @@ async function startIpcBridgeServer(options: ServerOptions): Promise<void> {
     }
   };
 
-  websocketServer.on("connection", (socket) => {
+  websocketServer.on("connection", (socket, request) => {
+    const token = new URL(
+      request.url ?? "/",
+      "http://localhost",
+    ).searchParams.get("realtimeToken");
     let rendererWindow: RendererWindow | undefined;
+    const messagePorts = new Map<string, WebSocketMessagePort>();
+    const disconnectMessagePorts = (): void => {
+      for (const port of messagePorts.values()) port.disconnect();
+      messagePorts.clear();
+    };
     // Each tab is a real registered app view, with its own IPC client and ownership.
     const rendererReady = rendererWindowFactory
       .then(async (createWindow) => {
         if (socket.readyState !== WebSocket.OPEN) return undefined;
-        const window = await createWindow();
+        const window =
+          token === null
+            ? await createWindow()
+            : (realtimeWindows.claim(token) as RendererWindow | undefined);
+        if (!window) {
+          socket.close(1008, "Invalid or expired voice renderer");
+          return undefined;
+        }
         if (socket.readyState !== WebSocket.OPEN) {
           window.destroy();
           return undefined;
         }
         rendererWindow = window;
         rendererSockets.set(window.webContents.id, socket);
+        window.once("closed", () => {
+          disconnectMessagePorts();
+          rendererSockets.delete(window.webContents.id);
+          socket.close(1000, "Renderer closed");
+        });
+        if (token !== null) {
+          window.webContents.emit("did-finish-load");
+          window.emit("ready-to-show");
+        }
         return window;
       })
       .catch((error) => {
@@ -534,7 +573,6 @@ async function startIpcBridgeServer(options: ServerOptions): Promise<void> {
         return undefined;
       });
 
-    const messagePorts = new Map<string, WebSocketMessagePort>();
     const dispatchPostMessage = (
       channel: string,
       message: unknown,
@@ -556,11 +594,10 @@ async function startIpcBridgeServer(options: ServerOptions): Promise<void> {
     };
 
     socket.on("close", () => {
-      for (const port of messagePorts.values()) {
-        port.disconnect();
-      }
-      messagePorts.clear();
+      disconnectMessagePorts();
       if (rendererWindow) {
+        realtimeWindows.closeOwner(rendererWindow.webContents.id);
+        realtimeWindows.close(rendererWindow.webContents.id);
         rendererSockets.delete(rendererWindow.webContents.id);
         rendererWindow.destroy();
       }

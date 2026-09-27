@@ -1,4 +1,11 @@
 import "./mobile-sidebar-actions";
+import {
+  realtimeToken,
+  handleRealtimeWindowMessage,
+  closeRealtimeWindows,
+  installRealtimeMediaCleanup,
+  type RealtimeWindowMessage,
+} from "./realtime";
 import { installQuotaRecovery } from "./quota-recovery";
 import { downloadLocalFile, type LocalFileOpenRequest } from "./downloads";
 import {
@@ -51,6 +58,7 @@ type RendererToMainMessage =
     };
 
 type MainToRendererMessage =
+  | RealtimeWindowMessage
   | {
       type: "ipc-main-event";
       channel: string;
@@ -91,6 +99,9 @@ type MainToRendererMessage =
     };
 
 const RECONNECT_DELAY_MS = 1_000;
+const disposeRealtimeMedia = realtimeToken
+  ? installRealtimeMediaCleanup()
+  : null;
 
 type MemoryNavigationChange = {
   action: "POP" | "PUSH" | "REPLACE";
@@ -111,6 +122,7 @@ type StatsigGateEvaluation = {
 };
 
 type ElectronShimState = {
+  preferLightweightVoiceRenderer?: boolean;
   downloadLocalFile?: (request: LocalFileOpenRequest) => boolean;
   initialRoute?: string;
   initialSidebarState?: boolean;
@@ -171,6 +183,13 @@ export function emitRendererEvent(channel: string, args: unknown[]): void {
 }
 
 function handleIncomingMessage(message: MainToRendererMessage): void {
+  if (
+    message.type === "realtime-window-open" ||
+    message.type === "realtime-window-close"
+  ) {
+    handleRealtimeWindowMessage(message);
+    return;
+  }
   if (message.type === "ipc-main-event") {
     emitRendererEvent(message.channel, message.args);
     return;
@@ -226,6 +245,7 @@ function flushOutboundQueue(): void {
 }
 
 function scheduleReconnect(): void {
+  if (realtimeToken) return;
   if (reconnectTimeoutId !== null) {
     return;
   }
@@ -245,7 +265,7 @@ function ensureSocket(): void {
   }
 
   socket = new WebSocket(
-    `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.host}/__backend/ipc`,
+    `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.host}/__backend/ipc${realtimeToken ? `?${new URLSearchParams({ realtimeToken })}` : ""}`,
   );
   socket.addEventListener("open", () => {
     // App-host RPC transfers MessagePorts once at startup. A new connection needs
@@ -268,6 +288,8 @@ function ensureSocket(): void {
     }
   });
   socket.addEventListener("close", () => {
+    closeRealtimeWindows();
+    disposeRealtimeMedia?.();
     needsReload = true;
     const error = new Error("Connection to Codex was lost");
     for (const pending of pendingInvokes.values()) pending.reject(error);
@@ -288,6 +310,7 @@ function ensureSocket(): void {
 }
 
 function enqueueMessage(message: RendererToMainMessage): void {
+  if (realtimeToken && needsReload) return;
   outboundQueue.push(message);
   ensureSocket();
   flushOutboundQueue();
@@ -299,6 +322,8 @@ function nextRequestId(): string {
 }
 
 function invokeMain(channel: string, args: unknown[]): Promise<unknown> {
+  if (realtimeToken && needsReload)
+    return Promise.reject(new Error("Voice renderer closed"));
   const requestId = nextRequestId();
   return new Promise((resolve, reject) => {
     pendingInvokes.set(requestId, { resolve, reject });
@@ -371,6 +396,7 @@ const themeMediaQuery = matchMedia("(prefers-color-scheme: dark)");
 const mobileMediaQuery = matchMedia("(max-width: 768px)");
 const initialSidebarState = !mobileMediaQuery.matches;
 const electronShim = (window.__ELECTRON_SHIM__ ??= {});
+electronShim.preferLightweightVoiceRenderer = true;
 electronShim.downloadLocalFile = downloadLocalFile;
 const buildFlavor: "prod" | "dev" | "agent" | string = "prod";
 
@@ -409,7 +435,9 @@ const initialRoute = mapBrowserPathToInitialRoute(
   window.location.pathname,
   window.location.search,
 );
-electronShim.initialRoute = initialRoute.memoryPath;
+electronShim.initialRoute = realtimeToken
+  ? "/avatar-overlay"
+  : initialRoute.memoryPath;
 
 if (initialRoute.browserPath) {
   window.history.pushState(undefined, "", initialRoute.browserPath);

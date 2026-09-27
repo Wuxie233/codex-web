@@ -1,0 +1,14 @@
+--- a/webview/assets/app-initial-236e1501144c.js
++++ b/webview/assets/app-initial-236e1501144c.js
+@@ -497792,7 +497792,10 @@
+         static async create(t, n) {
+           let r;
+           try {
+-            r = await lHs.create(t, { displayScale: n.displayScale });
++            // Native WebGL rendering can block browser audio startup.
++            // Reuse the native animated Canvas renderer for the Web host.
++            if (!window.__ELECTRON_SHIM__?.preferLightweightVoiceRenderer)
++              r = await lHs.create(t, { displayScale: n.displayScale });
+           } catch {
+             r = null;
+           }
