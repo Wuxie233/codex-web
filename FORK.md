@@ -239,6 +239,15 @@ swipes, original context-menu events, mouse) and `tests/browser/project-sources.
 (including short landscape viewports). These browser touch simulations do not
 replace testing physical tablet gestures.
 
+Large automatic diff previews additionally require a hover-capable, non-coarse
+primary pointer. `webview-touch-diff-preview.patch` disables only this tooltip
+when `(hover: none), (pointer: coarse)` matches, including wide landscape tablets;
+the original file click and Review controls remain available. Media changes update
+the mounted component and dismiss any preview. Mouse-primary hybrid devices retain
+hover previews. Run `node --test tests/touch-diff-preview.test.cjs` after preparing
+the pinned Desktop assets to verify disabled rendering, native click preservation,
+mouse configuration, input changes and subscription cleanup.
+
 ### Browser file downloads
 
 `webview-file-download.patch` intercepts the native open-in helper through

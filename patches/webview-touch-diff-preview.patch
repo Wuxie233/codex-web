@@ -1,0 +1,35 @@
+--- a/webview/assets/app-primary-6b28e06666ff.js
++++ b/webview/assets/app-primary-6b28e06666ff.js
+@@ -361292,7 +361292,23 @@
+         { owner: (e) => e.threadId },
+       )));
+   });
++// Large diff previews require a primary pointer that can reliably hover.
++function browserDiffPreviewMedia() {
++  return window.matchMedia(`(hover: none), (pointer: coarse)`);
++}
++function browserDiffPreviewSubscribe(onChange) {
++  const media = browserDiffPreviewMedia();
++  media.addEventListener(`change`, onChange);
++  return () => media.removeEventListener(`change`, onChange);
++}
++function browserDiffPreviewDisabled() {
++  return browserDiffPreviewMedia().matches;
++}
+ function RDr(e) {
++  const touchPreviewDisabled = (0, UDr.useSyncExternalStore)(
++    browserDiffPreviewSubscribe,
++    browserDiffPreviewDisabled,
++  );
+   let t = (0, HDr.c)(18),
+     {
+       children: n,
+@@ -361303,7 +361319,7 @@
+       linesRemoved: s,
+       onOpen: c,
+     } = e,
+-    l = i !== void 0 && i,
++    l = (i !== void 0 && i) || touchPreviewDisabled,
+     [u, d] = (0, UDr.useState)(!1),
+     f;
+   t[0] !== r || t[1] !== u
