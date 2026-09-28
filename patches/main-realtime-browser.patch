@@ -55,7 +55,20 @@
      }
      startIfReady() {
        let e = this.pendingStart,
-@@ -15402,13 +15425,13 @@
+@@ -15348,7 +15371,11 @@
+       ((this.pendingStart = null), (this.hasSession = !0));
+       let r = this.sessionGeneration,
+         i = this.launch;
+-      i != null && this.setLaunchTimeout(r, Wae);
++      i != null &&
++        this.setLaunchTimeout(
++          r,
++          globalThis.__codexElectronIpcBridge?.attachRealtimeWindow ? 3e4 : Wae,
++        );
+       let a = t.start(e).then(
+         () => {
+           r === this.sessionGeneration &&
+@@ -15402,13 +15429,13 @@
              safe: {},
              sensitive: { error: n },
            }),
@@ -76,7 +89,7 @@
          }, t)));
      }
      clearLaunchTimeout() {
-@@ -16546,6 +16569,15 @@
+@@ -16546,6 +16573,15 @@
        this.presentationVisibility ?? (this.startupPresentationVisibility = t);
        let n = ++this.windowVisibilitySequence,
          r = await this.ensureWindow(n);

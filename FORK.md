@@ -343,3 +343,11 @@ messages skip compression and clients without extension support keep the plain t
 Origin checks, one-use voice tokens and the decompressed message-size limit still
 apply. `node --test tests/ipc-compression.test.cjs` checks negotiation, plain-client
 fallback, byte-preserving delivery and message ordering over real WebSockets.
+
+Web voice startup keeps the native 30-second preparation deadline and allows
+30 seconds for connection after the renderer is ready, including thread creation
+and WebRTC setup over the browser IPC transport. The bridge is detected when
+startup begins; Desktop retains its 10-second connection deadline. Cancellation,
+timeout cleanup and successful-start timer removal remain unchanged. Controller
+checks are in `tests/realtime-voice.test.cjs`; actual audio still requires browser
+acceptance against the running service.

@@ -50,7 +50,7 @@ test('native window closure and missing parent invalidate pending tokens', () =>
   assert.equal(b.destroyCount, 1);
 });
 
-function controllerFixture() {
+function controllerFixture({ web = true } = {}) {
   const f = registry(), overlay = f.window(2), timers = new Map(), states = [];
   const context = vm.createContext({
     Symbol,
@@ -58,10 +58,11 @@ function controllerFixture() {
     n: { to: String, es: () => Promise.withResolvers() }, Uae: 30000, Wae: 10000,
     setTimeout(fn, delay) { const token = {}; timers.set(token, { fn, delay }); return token; },
     clearTimeout(token) { timers.delete(token); },
-    __codexElectronIpcBridge: {
+    __codexElectronIpcBridge: web ? {
+      attachRealtimeWindow: (window, owner) => f.manager.attach(window, owner),
       closeRealtimeWindow: (id) => f.manager.close(id),
       canAttachRealtimeWindow: (id, owner) => f.manager.canAttach(id, owner),
-    },
+    } : undefined,
   });
   vm.runInContext(main.slice(start, end) + ';this.Controller = Gae;', context);
   let rendererId = overlay.webContents.id;
@@ -72,8 +73,56 @@ function controllerFixture() {
     async preparePresentation(origin) { f.manager.attach(overlay, origin.id); },
   });
   overlay.on('closed', () => { rendererId = null; controller.handleWindowClosed(overlay.webContents.id); });
-  return { ...f, overlay, controller, states, timers };
+  return { ...f, overlay, controller, states, timers, context };
 }
+
+function rpcCallback(fn) {
+  fn.dup = () => fn;
+  fn.onRpcBroken = () => {};
+  fn[Symbol.dispose] = () => {};
+  return fn;
+}
+
+for (const web of [true, false]) {
+  test(`voice startup keeps preparation at 30s and uses ${web ? 30 : 10}s for ${web ? 'Web' : 'native'} connection`, async () => {
+    const f = controllerFixture({ web }), pending = Promise.withResolvers();
+    await f.controller.requestStart({ id: 1001 }, { source: 'composer_button_new_thread' }, 'launch');
+    assert.deepEqual([...f.timers.values()].map(timer => timer.delay), [30000]);
+    f.controller.registerStarter(f.overlay.webContents.id,
+      rpcCallback(() => pending.promise), rpcCallback(async () => {}), true);
+    assert.deepEqual([...f.timers.values()].map(timer => timer.delay), [web ? 30000 : 10000]);
+    const started = f.controller.startInFlight;
+    pending.resolve(); await started;
+    assert.equal(f.states.at(-1).state, 'connected');
+    assert.equal(f.timers.size, 0);
+    f.manager.closeOwner(1001);
+  });
+}
+
+test('Web startup timeout closes its renderer and ignores late connection success', async () => {
+  const f = controllerFixture(), pending = Promise.withResolvers();
+  let cancelCalls = 0;
+  // The bridge may be installed after module evaluation and controller creation.
+  const bridge = f.context.__codexElectronIpcBridge;
+  f.context.__codexElectronIpcBridge = undefined;
+  await f.controller.requestStart({ id: 1001 }, { source: 'composer_button_new_thread' }, 'launch');
+  f.context.__codexElectronIpcBridge = bridge;
+  const token = f.messages[0].token;
+  f.controller.registerStarter(f.overlay.webContents.id,
+    rpcCallback(() => pending.promise), rpcCallback(async () => { cancelCalls++; }), true);
+  const started = f.controller.startInFlight;
+  assert.deepEqual([...f.timers.values()].map(timer => timer.delay), [30000]);
+  [...f.timers.values()][0].fn();
+  assert.equal(f.overlay.destroyCount, 1);
+  assert.equal(f.manager.claim(token), undefined);
+  assert.equal(f.controller.isSessionReserved(), false);
+  assert.equal(f.states.at(-1).state, 'failed');
+  assert.equal(f.timers.size, 0);
+  assert.equal(cancelCalls, 0);
+  pending.resolve(); await started;
+  assert.equal(f.states.at(-1).state, 'failed');
+  assert.equal(f.timers.size, 0);
+});
 
 test('native launch timeout destroys child and expires its token immediately', async () => {
   const f = controllerFixture();
