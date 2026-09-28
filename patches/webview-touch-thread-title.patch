@@ -1,0 +1,124 @@
+--- a/webview/assets/app-initial-236e1501144c.js
++++ b/webview/assets/app-initial-236e1501144c.js
+@@ -314296,6 +314296,7 @@
+       shortcuts: p,
+       awaitBeforeOpen: m,
+       onBeforeOpen: h,
++      contextMenuHeader: codexWebContextMenuHeader,
+     } = e,
+     g = a === void 0 ? `contextmenu` : a,
+     _ = m === void 0 || m,
+@@ -314736,7 +314737,9 @@
+   t[69] === he
+     ? (ge = t[70])
+     : ((ge = { zoom: he }), (t[69] = he), (t[70] = ge));
+-  let _e = G(C),
++  let _e = codexWebContextMenuHeader == null
++      ? G(C)
++      : [codexWebContextMenuHeader, ...G(C)],
+     ve;
+   t[71] !== V || t[72] !== me.Content || t[73] !== ge || t[74] !== _e
+     ? ((ve = (0, cq.jsx)(me.Content, {
+@@ -371562,7 +371565,15 @@
+     };
+   }, [i, oe]);
+   let se = Mu(z1n()),
+-    W = Nu([se, oe], ([e, t]) => g ?? aM(e, t)),
++    W = Nu([se, oe], ([e, t]) => {
++      if (g != null) return g;
++      if (v && window.matchMedia(`(hover: none) and (pointer: coarse)`).matches) {
++        return window.innerWidth <= 768
++          ? Math.min(360, window.innerWidth - 56) / L
++          : aM(Math.max(e, 320 / L), t);
++      }
++      return aM(e, t);
++    }),
+     ce = Nu(W, (e) => `${Math.max(0, e - DZa * 2)}px`),
+     { isMounted: le, animatedSize: G } = Fqa({
+       animation: Nu(db(S0n), (e) => (v ? e : 1)),
+--- a/webview/assets/app-primary-6b28e06666ff.js
++++ b/webview/assets/app-primary-6b28e06666ff.js
+@@ -157241,6 +157241,36 @@
+     d
+   );
+ }
++function codexWebSuppressOpenThreadMenuClick(event) {
++  if (
++    window.matchMedia(`(hover: none) and (pointer: coarse)`).matches &&
++    event.currentTarget.getAttribute(`data-state`) === `open`
++  ) {
++    event.preventDefault();
++    event.stopPropagation();
++  }
++}
++function CodexWebTouchThreadTitle({
++  conversationId,
++  hostId,
++  titleOverride,
++  threadSummary,
++}) {
++  let title =
++      qw($Dn, { hostId, threadId: conversationId }) ?? threadSummary?.title ?? null,
++    intl = Vl();
++  return (0, TQ.jsx)(`div`, {
++    "data-codex-web-touch-thread-title": ``,
++    dir: `auto`,
++    children:
++      QOn({ title, titleOverride }) ??
++      intl.formatMessage({
++        id: `codex.taskRow.title`,
++        defaultMessage: `New chat`,
++        description: `Default title for a Codex task that doesn't have a title`,
++      }),
++  });
++}
+ function Fjn(e) {
+   let t = (0, Ljn.c)(151),
+     {
+@@ -157792,8 +157822,21 @@
+                 (0, TQ.jsx)(TQ.Fragment, {
+                   children: (0, TQ.jsx)(Rm, {
+                     getItems: Be,
++                    contextMenuHeader:
++                      de.dataAttributes?.[qde.sidebarThreadRow] == null
++                        ? null
++                        : (0, TQ.jsx)(CodexWebTouchThreadTitle, {
++                            conversationId: n,
++                            hostId: M,
++                            titleOverride: de.titleOverride,
++                            threadSummary: w,
++                          }, `codex-web-touch-thread-title`),
+                     children: (0, TQ.jsx)(`div`, {
+                       className: `contents`,
++                      onClickCapture:
++                        de.dataAttributes?.[qde.sidebarThreadRow] == null
++                          ? void 0
++                          : codexWebSuppressOpenThreadMenuClick,
+                       children: st,
+                     }),
+                   }),
+@@ -157804,7 +157847,23 @@
+           : (0, TQ.jsx)(Rm, {
+               getItems: () => Xe(`context-menu`),
+               onBeforeOpen: Je,
+-              children: st,
++              contextMenuHeader:
++                de.dataAttributes?.[qde.sidebarThreadRow] == null
++                  ? null
++                  : (0, TQ.jsx)(CodexWebTouchThreadTitle, {
++                      conversationId: n,
++                      hostId: M,
++                      titleOverride: de.titleOverride,
++                      threadSummary: w,
++                    }, `codex-web-touch-thread-title`),
++              children:
++                de.dataAttributes?.[qde.sidebarThreadRow] == null
++                  ? st
++                  : (0, TQ.jsx)(`div`, {
++                      className: `contents`,
++                      onClickCapture: codexWebSuppressOpenThreadMenuClick,
++                      children: st,
++                    }),
+             })),
+       (t[131] = Xe),
+       (t[132] = Be),

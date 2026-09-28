@@ -3,6 +3,7 @@ const archiveSelector = 'button:is([aria-label="归档聊天"], [aria-label="Arc
 const mobile = matchMedia('(hover: none) and (pointer: coarse)');
 const style = document.createElement('style');
 style.textContent = `
+[data-codex-web-touch-thread-title] { display: none; }
 @layer theme {
 @media (hover: none) and (pointer: coarse) {
   .app-shell-left-panel .touch-none { touch-action: pan-y pinch-zoom !important; }
@@ -12,12 +13,27 @@ style.textContent = `
   .app-shell-left-panel [class~="group/folder-row"] .grid:has(.col-start-1 button) > div.col-start-1 { visibility: visible !important; }
   .app-shell-left-panel [class~="group/nav-section-title"] .pointer-events-none:has(button),
   .app-shell-left-panel .pointer-events-none:has([data-app-action-sidebar-project-create]) { opacity: 1 !important; pointer-events: auto !important; }
-  /* Reveal the original action rail and reserve space without restyling its buttons. */
-  .app-shell-left-panel .sidebar-item:has(.absolute button) { padding-inline-end: 116px !important; }
-  .app-shell-left-panel .sidebar-item .absolute:has(button) { z-index: 20 !important; opacity: 1 !important; width: auto !important; pointer-events: auto !important; }
-  /* Status badges share the trailing edge upstream; keep them beside the revealed actions. */
-  .app-shell-left-panel .sidebar-item:has(.absolute button) :is(span, .absolute)[data-hover-card-open-immediately] { position: absolute !important; visibility: visible !important; opacity: 1 !important; display: flex !important; inset-inline-end: 60px !important; pointer-events: none !important; }
-  .app-shell-left-panel .sidebar-item .absolute button { opacity: 1 !important; pointer-events: auto !important; }
+  /* Keep the original title, badges and buttons in one row, sized by their content. */
+  .app-shell-left-panel .sidebar-item:has([data-thread-title]) { display: flex !important; align-items: center; height: auto !important; min-height: var(--height-token-row); padding-block: 4px !important; }
+  .app-shell-left-panel .sidebar-item > .flex.w-full:has([data-thread-title]) { order: 0; flex: 1 1 0; min-width: 0; width: auto !important; height: auto !important; }
+  .app-shell-left-panel .sidebar-item > .flex.w-full > .flex:has([data-thread-title]) + .flex { min-width: 0 !important; flex-shrink: 0; }
+  .app-shell-left-panel .sidebar-item:has([data-thread-title]) > .contents > .absolute:has(button),
+  .app-shell-left-panel .sidebar-item:has([data-thread-title]) > .absolute[data-hover-card-open-immediately] { position: static !important; order: 2; flex: none; width: auto !important; min-width: 0 !important; height: auto !important; margin: 0 !important; margin-inline-start: 6px !important; padding: 0 !important; visibility: visible !important; opacity: 1 !important; display: flex !important; pointer-events: auto !important; }
+  .app-shell-left-panel .sidebar-item:has([data-thread-title]) > .absolute[data-hover-card-open-immediately] { order: 1; }
+  /* The desktop spacer reserved room for the badge overlay, now a flex item. */
+  .app-shell-left-panel .sidebar-item:has(> .absolute[data-hover-card-open-immediately]) > .flex.w-full > .shrink-0[style]:empty { display: none !important; }
+  .app-shell-left-panel .sidebar-item:has([data-thread-title]) span[data-hover-card-open-immediately] { position: static !important; margin-inline: 0 !important; visibility: visible !important; opacity: 1 !important; display: flex !important; }
+  .app-shell-left-panel .sidebar-item > .contents > .absolute button { opacity: 1 !important; pointer-events: auto !important; }
+  /* Marquee has its own nowrap/max-content track: reset every layer, then clamp. */
+  .app-shell-left-panel [data-thread-title] { white-space: normal !important; overflow-wrap: anywhere; }
+  .app-shell-left-panel [data-thread-title] > span,
+  .app-shell-left-panel [data-thread-title] > span > span { display: block !important; width: 100% !important; min-width: 0 !important; margin: 0 !important; padding: 0 !important; mask-image: none !important; animation: none !important; transform: none !important; }
+  .app-shell-left-panel [data-thread-title] [data-marquee-content] { display: -webkit-box !important; min-width: 0 !important; width: 100%; white-space: normal !important; overflow: hidden !important; overflow-wrap: anywhere; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+  .app-shell-left-panel [data-thread-title] [data-marquee-copy] { display: none !important; }
+  /* This is a label inside the existing context menu, not another menu action. */
+  /* Radix measures collision space in viewport pixels; the menu itself uses app zoom. */
+  [role="menu"]:has(> [data-codex-web-touch-thread-title]) { min-width: 0 !important; max-width: min(calc(var(--radix-context-menu-content-available-width, 100vw) / var(--codex-window-zoom, 1)), calc((100vw - 16px) / var(--codex-window-zoom, 1))); max-height: min(calc(var(--radix-context-menu-content-available-height, 100dvh) / var(--codex-window-zoom, 1)), calc((100dvh - 16px) / var(--codex-window-zoom, 1))); overflow-y: auto; }
+  [data-codex-web-touch-thread-title] { display: block !important; flex-shrink: 0; box-sizing: border-box; width: min(320px, calc((100vw - 32px) / var(--codex-window-zoom, 1))); max-width: 100%; max-height: min(calc(30dvh / var(--codex-window-zoom, 1)), 12rem); overflow-y: auto; padding: 8px; margin-bottom: 4px; white-space: normal; overflow-wrap: anywhere; line-height: 1.4; }
 }
 }
 .codex-web-archive-confirm { margin: auto; width: min(320px, calc(100vw - 40px)); box-sizing: border-box; padding: 20px; border: 1px solid #888; border-radius: 16px; background: #fff; color: #181818; }

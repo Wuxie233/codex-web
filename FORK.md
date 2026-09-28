@@ -232,6 +232,24 @@ drag activation. The original stationary long-press menus, mouse drag and right-
 remain available. The patch is tied to the pinned Desktop bundle and must be
 rechecked when upgrading it.
 
+`webview-touch-thread-title.patch` adds an optional header to the original thread
+context menu. Sidebar rows supply the same title subscription, override and localized
+fallback as their visible title; touch-only styling in `mobile-sidebar-actions.ts`
+wraps long paths and bounds scrolling so the original menu actions stay reachable.
+Keep the header non-interactive and check title updates, touch long-press and desktop
+right-click when updating the pinned bundle.
+The sidebar menu trigger uses a `display: contents` DOM child so the original
+long-press pointer handlers reach the row instead of stopping at its React component.
+On touch screens, its click capture suppresses row navigation while that menu is
+open, preventing the release click from closing the drawer. Native long-press
+timing, short taps and scrolling retain their existing handlers.
+The same patch adapts the shell's shared width value on touch devices: phones use
+up to 360 CSS pixels with 56 pixels left visible, and tablets use a 320-pixel minimum
+while preserving wider saved widths. Fixed-width panels and mouse layouts retain
+their original sizing; apply widths before the shell derives the remaining content.
+`node tests/browser/sidebar-titles.cjs` checks title wrapping, complete menu titles,
+menu bounds, long-press release without navigation, short taps and touch scrolling.
+
 The folder picker adapts to the visible height without adding controls or changing
 single-click selection and double-click navigation. Composer controls retain their
 native styling. Validate with `tests/browser/sidebar-scroll.cjs` (phone/tablet
