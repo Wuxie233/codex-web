@@ -288,3 +288,25 @@ test('closed voice senders are rejected before native IPC routing after their bi
   assert.equal(f.manager.getOwner(overlay.webContents.id), undefined);
   assert.throws(() => makeEvent(overlay.id), /Renderer window 7 is closed/);
 });
+
+test('native avatar layout can read and update browser content bounds across launches', () => {
+  const { BrowserWindow } = require('../src/server/electron/index.js');
+  const a = main.indexOf('    setWindowBounds(e, t, n) {');
+  const b = main.indexOf('    sendLayoutToRenderer(e)', a);
+  const c = main.indexOf('function km(e, t) {');
+  const d = main.indexOf('\nvar Am', c);
+  assert(a >= 0 && b > a && c >= 0 && d > c);
+  const manager = vm.runInNewContext(main.slice(c, d) + '\n({' + main.slice(a, b) + '})');
+  const window = new BrowserWindow({ width: 1200, height: 800 });
+  try {
+    for (const bounds of [{ x: 60, y: 30, width: 360, height: 240 }, { x: 80, y: 90, width: 280, height: 220 }]) {
+      manager.setWindowBounds(window, bounds, false);
+      assert.deepEqual(window.getContentBounds(), bounds);
+      assert.deepEqual(window.getBounds(), bounds);
+      assert.equal(manager.isSettingWindowBounds, false);
+      const snapshot = window.getContentBounds(); snapshot.x = -999;
+      assert.deepEqual(window.getContentBounds(), bounds);
+      manager.setWindowBounds(window, bounds, false);
+    }
+  } finally { window.destroy(); }
+});

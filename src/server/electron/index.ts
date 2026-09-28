@@ -613,6 +613,20 @@ class BrowserWindow {
     return { ...this.bounds };
   }
 
+  getContentBounds(): { height: number; width: number; x: number; y: number } {
+    // Browser windows have no native frame or title bar in this adapter.
+    return this.getBounds();
+  }
+
+  setContentBounds(nextBounds: {
+    height?: number;
+    width?: number;
+    x?: number;
+    y?: number;
+  }): void {
+    this.setBounds(nextBounds);
+  }
+
   setBounds(nextBounds: {
     height?: number;
     width?: number;

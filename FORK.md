@@ -357,3 +357,9 @@ the server-side owner binding. If that owner window has gone away, the request i
 dropped rather than sent to another tab. Native and non-voice navigation retain
 the existing primary-window behavior. Owner bindings are removed with the overlay;
 closed renderers cannot submit trusted IPC messages.
+
+The browser window adapter stores content bounds using the same rectangle as its
+outer bounds: there is no native window frame. Native avatar layout reads and
+updates this rectangle when voice is opened again after a previous presentation.
+`tests/realtime-voice.test.cjs` executes the native layout setter against the real
+adapter to catch missing geometry methods.
