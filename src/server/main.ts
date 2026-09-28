@@ -853,6 +853,10 @@ async function startIpcBridgeServer(options: ServerOptions): Promise<void> {
     recovery.setAutoResume429(value),
   );
 
+  ipcMain.handle("quota-recovery:set-rate-limit-max-retries", (_event, value) =>
+    recovery.setRateLimitMaxRetries(value),
+  );
+
   const module = require(matches[0]!);
   module.runMainAppStartup();
 }

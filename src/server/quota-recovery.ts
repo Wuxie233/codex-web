@@ -164,6 +164,7 @@ export class QuotaRecovery {
   private autoRunning: Promise<void> | undefined;
   private idleWaiters = new Set<() => void>();
   private autoResumeOn429 = false;
+  private rateLimitMaxRetries = 3;
   private rateGeneration = 0;
   private disposed = false;
   private rateChains = new Map<string, RateLimitChain>();
@@ -180,14 +181,17 @@ export class QuotaRecovery {
       this.autoResumeOnAccountSwitch =
         settings.autoResumeOnAccountSwitch === true;
       this.autoResumeOn429 = settings.autoResumeOn429 === true;
+      if (settings.rateLimitMaxRetries !== undefined) {
+        this.validateRateLimitMaxRetries(settings.rateLimitMaxRetries);
+        this.rateLimitMaxRetries = settings.rateLimitMaxRetries;
+      }
       for (const [key, chain] of Object.entries(
         settings.rateLimitChains ?? {},
       )) {
         const value = chain as RateLimitChain;
         if (
-          !Number.isInteger(value.count) ||
+          !Number.isSafeInteger(value.count) ||
           value.count < 0 ||
-          value.count > 3 ||
           typeof value.failedTurnId !== "string"
         )
           throw Error("限流恢复记录格式错误");
@@ -235,10 +239,12 @@ export class QuotaRecovery {
   private persistSettings(
     account = this.autoResumeOnAccountSwitch,
     rate = this.autoResumeOn429,
+    maxRetries = this.rateLimitMaxRetries,
   ) {
     const settings = {
       autoResumeOnAccountSwitch: account,
       autoResumeOn429: rate,
+      rateLimitMaxRetries: maxRetries,
       rateLimitChains: Object.fromEntries(this.rateChains),
     };
     const file = this.file + ".settings.json";
@@ -259,6 +265,50 @@ export class QuotaRecovery {
       this.rateGeneration++;
       this.cancelRateTimers();
       if (value) for (const host of this.hosts.keys()) this.startRateScan(host);
+    }
+    return this.visibleSnapshot();
+  }
+  private validateRateLimitMaxRetries(value: unknown): asserts value is number {
+    if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0)
+      throw Error("重试次数必须为非负整数（0 表示无限）");
+  }
+  private rateBudgetAvailable(count: number) {
+    return this.rateLimitMaxRetries === 0 || count < this.rateLimitMaxRetries;
+  }
+  private rateDelay(count: number) {
+    return RATE_LIMIT_DELAYS[Math.min(count, RATE_LIMIT_DELAYS.length - 1)]!;
+  }
+  setRateLimitMaxRetries(value: unknown) {
+    this.validateRateLimitMaxRetries(value);
+    this.persistSettings(
+      this.autoResumeOnAccountSwitch,
+      this.autoResumeOn429,
+      value,
+    );
+    if (value !== this.rateLimitMaxRetries) {
+      this.rateLimitMaxRetries = value;
+      this.rateGeneration++;
+      this.cancelRateTimers();
+      for (const entry of this.entries.values()) {
+        if (entry.reason !== "rateLimit" || entry.status !== "pending")
+          continue;
+        const chain = this.rateChains.get(
+          this.key(entry.hostId, entry.threadId),
+        );
+        if (!chain || chain.blocked || chain.failedTurnId !== entry.turnId)
+          continue;
+        if (this.rateBudgetAvailable(chain.count)) {
+          entry.retryAt ??= this.clock.now() + this.rateDelay(chain.count);
+          delete entry.detail;
+        } else {
+          delete entry.retryAt;
+          entry.detail = `已达到连续自动重试上限（${value}次）`;
+        }
+      }
+      this.save();
+      this.scheduleRateEntries();
+      if (this.autoResumeOn429)
+        for (const host of this.hosts.keys()) this.startRateScan(host);
     }
     return this.visibleSnapshot();
   }
@@ -320,7 +370,8 @@ export class QuotaRecovery {
       )
         continue;
       const chain = this.rateChains.get(this.key(entry.hostId, entry.threadId));
-      if (!chain || chain.blocked || chain.count >= 3) continue;
+      if (!chain || chain.blocked || !this.rateBudgetAvailable(chain.count))
+        continue;
       const generation = this.rateGeneration;
       const quotaRevision = this.quotaRevision;
       const timer = this.clock.setTimeout(
@@ -355,7 +406,7 @@ export class QuotaRecovery {
       entry.retryAt <= this.clock.now() &&
       !!chain &&
       !chain.blocked &&
-      chain.count < 3
+      this.rateBudgetAvailable(chain.count)
     );
   }
   // Called only after the connection has read its usable authenticated principal.
@@ -562,12 +613,13 @@ export class QuotaRecovery {
         ? {
             autoRetryCount: chain!.count,
             retryAt:
-              !chain!.blocked && chain!.count < 3
+              !chain!.blocked && this.rateBudgetAvailable(chain!.count)
                 ? Math.max(time, this.clock.now()) +
-                  RATE_LIMIT_DELAYS[chain!.count]!
+                  this.rateDelay(chain!.count)
                 : undefined,
-            detail:
-              chain!.count >= 3 ? "已达到连续自动重试上限（3次）" : undefined,
+            detail: !this.rateBudgetAvailable(chain!.count)
+              ? `已达到连续自动重试上限（${this.rateLimitMaxRetries}次）`
+              : undefined,
           }
         : {}),
     });
@@ -729,6 +781,7 @@ export class QuotaRecovery {
       scanError: this.scanError,
       autoResumeOnAccountSwitch: this.autoResumeOnAccountSwitch,
       autoResumeOn429: this.autoResumeOn429,
+      rateLimitMaxRetries: this.rateLimitMaxRetries,
     };
   }
   async list(refresh = true) {
@@ -830,18 +883,19 @@ export class QuotaRecovery {
           count: 0,
           failedTurnId: last.id,
         };
+        rootChain.failedTurnId = last.id;
         this.rateChains.set(rootKey, rootChain);
-        const sourceDelay = RATE_LIMIT_DELAYS[entry.autoRetryCount ?? 0];
+        const sourceDelay = this.rateDelay(entry.autoRetryCount ?? 0);
         const retryBase =
           entry.retryAt !== undefined && sourceDelay !== undefined
             ? entry.retryAt - sourceDelay
             : this.clock.now();
         entry.autoRetryCount = rootChain.count;
         entry.retryAt =
-          !rootChain.blocked && rootChain.count < 3
+          !rootChain.blocked && this.rateBudgetAvailable(rootChain.count)
             ? Math.max(
                 entry.retryAt ?? 0,
-                retryBase + RATE_LIMIT_DELAYS[rootChain.count]!,
+                retryBase + this.rateDelay(rootChain.count),
               )
             : undefined;
         this.persistSettings();
@@ -1212,7 +1266,11 @@ export class QuotaRecovery {
           ) {
             // A preference cancellation did not attempt delivery. Keep its
             // original deadline and budget so enabling can resume the wait.
-            entry.detail = "自动继续已暂停";
+            entry.detail = !this.autoResumeOn429
+              ? "自动继续已暂停"
+              : !this.rateBudgetAvailable(entry.autoRetryCount ?? 0)
+                ? `已达到连续自动重试上限（${this.rateLimitMaxRetries}次）`
+                : undefined;
             this.save();
             continue;
           }

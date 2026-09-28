@@ -278,7 +278,10 @@ tasks that have not been opened in the browser.
 
 The independent “429 后自动继续” setting also defaults to off. After a terminal
 rate-limit failure it waits 30, 60, then 120 seconds before sending a continuation
-message, with at most three consecutive automatic continuations. Each message
+message. The consecutive retry limit defaults to 3 and is configurable in the
+dialog; 0 means unlimited. Further retries wait 120 seconds each. Changing the
+limit preserves the used count; increasing it can resume budget-exhausted pending
+entries, while lowering it blocks sends beyond the new limit. Each message
 starts a new turn; this does not change Codex's internal request retries. Native
 retries still in progress and quota exhaustion are excluded. Retry counts persist
 across restarts and toggling the setting; one successfully completed turn resets

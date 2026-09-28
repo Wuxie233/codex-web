@@ -609,3 +609,193 @@ test("a child timer remapped during dispatch cannot bypass the root 120-second d
   await f.advance(90000);
   assert.equal(f.sent.length, 3);
 });
+
+for (const limit of [1, 5, 0]) {
+  test(`custom retry limit ${limit} survives restart and caps backoff`, async (t) => {
+    const f = fixture(t);
+    assert.equal(f.recovery.snapshot().rateLimitMaxRetries, 3);
+    f.recovery.setRateLimitMaxRetries(limit);
+    f.fail();
+    f.recovery.setAutoResume429(true);
+    await flush();
+    const attempts = limit || 7;
+    for (let i = 0; i < attempts; i++) {
+      const delay = [30000, 60000, 120000][Math.min(i, 2)];
+      await f.advance(delay - 1);
+      assert.equal(f.sent.length, i);
+      await f.advance(1);
+      assert.equal(f.sent.length, i + 1);
+      f.fail("one", `auto-${i + 1}`);
+      f.reload();
+      await flush();
+      assert.equal(f.recovery.snapshot().rateLimitMaxRetries, limit);
+    }
+    if (limit) {
+      await f.advance(1000000);
+      assert.equal(f.sent.length, limit);
+      const entry = f.recovery
+        .snapshot()
+        .entries.find((e) => e.turnId === `auto-${limit}`);
+      assert.equal(entry.retryAt, undefined);
+      assert.match(entry.detail, new RegExp(`${limit}次`));
+    } else {
+      f.recovery.setAutoResume429(false);
+      await f.advance(1000000);
+      assert.equal(f.sent.length, attempts);
+    }
+  });
+}
+
+test("retry setting rejects invalid values without changing persisted settings", (t) => {
+  const f = fixture(t);
+  f.recovery.setRateLimitMaxRetries(5);
+  for (const value of [
+    -1,
+    1.5,
+    "0",
+    null,
+    NaN,
+    Infinity,
+    Number.MAX_SAFE_INTEGER + 1,
+  ])
+    assert.throws(() => f.recovery.setRateLimitMaxRetries(value), /非负整数/);
+  f.reload();
+  assert.equal(f.recovery.snapshot().rateLimitMaxRetries, 5);
+});
+
+test("raising an exhausted limit resumes waiting and lowering preserves consumed count", async (t) => {
+  const f = fixture(t);
+  f.recovery.setRateLimitMaxRetries(1);
+  f.fail();
+  f.recovery.setAutoResume429(true);
+  await flush();
+  await f.advance(30000);
+  f.fail("one", "auto-1");
+  assert.equal(f.timers.size, 0);
+  f.recovery.setRateLimitMaxRetries(0);
+  await f.advance(59999);
+  assert.equal(f.sent.length, 1);
+  await f.advance(1);
+  assert.equal(f.sent.length, 2);
+  f.fail("one", "auto-2");
+  f.recovery.setRateLimitMaxRetries(1);
+  assert.equal(f.timers.size, 0);
+  f.reload();
+  await flush();
+  await f.advance(1000000);
+  assert.equal(f.sent.length, 2);
+  assert.equal(
+    f.recovery.snapshot().entries.find((e) => e.turnId === "auto-2")
+      .autoRetryCount,
+    2,
+  );
+});
+
+test("changing retry limit cancels a prepared send without consuming budget", async (t) => {
+  const f = fixture(t);
+  f.fail();
+  f.recovery.setAutoResume429(true);
+  await flush();
+  await f.advance(30000);
+  f.fail("one", "auto-1");
+  const start = f.adapter.startTurn;
+  f.adapter.startTurn = async (params, beforeSend) => {
+    f.recovery.setRateLimitMaxRetries(1);
+    return start(params, beforeSend);
+  };
+  await f.advance(60000);
+  assert.equal(f.sent.length, 1);
+  const entry = f.recovery
+    .snapshot()
+    .entries.find((e) => e.turnId === "auto-1");
+  assert.equal(entry.status, "pending");
+  assert.equal(entry.autoRetryCount, 1);
+  assert.equal(entry.retryAt, undefined);
+});
+
+test("unlimited setting never replays an uncertain delivery", async (t) => {
+  const f = fixture(t);
+  f.fail();
+  f.recovery.setAutoResume429(true);
+  await flush();
+  f.adapter.startTurn = async (params, beforeSend) => {
+    beforeSend();
+    f.sent.push(params);
+    throw Error("lost receipt");
+  };
+  await f.advance(30000);
+  f.recovery.setRateLimitMaxRetries(0);
+  f.reload();
+  await flush();
+  await f.advance(1000000);
+  assert.equal(f.sent.length, 1);
+  assert.equal(f.recovery.snapshot().entries[0].status, "unknown");
+});
+
+test("changing retry limit restarts an interrupted paginated history scan", async (t) => {
+  const f = fixture(t);
+  f.threads.set("history", {
+    id: "history",
+    status: { type: "idle" },
+    turns: [{ id: "old429", status: "failed", error: rate }],
+  });
+  let releaseFirstPage;
+  const firstPage = new Promise((resolve) => {
+    releaseFirstPage = resolve;
+  });
+  const cursors = [];
+  f.adapter.listThreads = async (params) => {
+    if (params.archived) return { data: [] };
+    cursors.push(params.cursor);
+    if (cursors.length === 1) await firstPage;
+    return params.cursor
+      ? { data: [...f.threads.values()] }
+      : { data: [], nextCursor: "page2" };
+  };
+  f.recovery.setAutoResume429(true);
+  await flush();
+  assert.deepEqual(cursors, [null]);
+  f.recovery.setRateLimitMaxRetries(0);
+  releaseFirstPage();
+  await flush();
+  assert.deepEqual(cursors, [null, null, "page2"]);
+  await f.advance(29999);
+  assert.equal(f.sent.length, 0);
+  await f.advance(1);
+  assert.deepEqual(
+    f.sent.map((entry) => entry.threadId),
+    ["history"],
+  );
+});
+
+test("raising the limit resumes an exhausted root failure discovered through a child", async (t) => {
+  const f = fixture(t);
+  f.recovery.setRateLimitMaxRetries(2);
+  f.fail("root", "initial");
+  f.recovery.setAutoResume429(true);
+  await flush();
+  await f.advance(30000);
+  f.fail("root", "auto-1");
+  await f.advance(60000);
+  // The root's completion notification was missed; child resolution reads it.
+  const root = f.threads.get("root");
+  root.turns.at(-1).status = "failed";
+  root.turns.at(-1).error = rate;
+  f.fail("child", "child-fail");
+  f.threads.get("child").parentThreadId = "root";
+  await f.recovery.list();
+  const mapped = f.recovery
+    .snapshot()
+    .entries.find(
+      (entry) => entry.threadId === "root" && entry.turnId === "auto-2",
+    );
+  assert.equal(mapped.autoRetryCount, 2);
+  assert.equal(mapped.retryAt, undefined);
+  f.recovery.setRateLimitMaxRetries(0);
+  await flush();
+  await f.advance(119999);
+  assert.equal(f.sent.length, 2);
+  await f.advance(1);
+  assert.equal(f.sent.length, 3);
+  assert.equal(f.sent[2].threadId, "root");
+});

@@ -16,6 +16,7 @@ type RecoverySnapshot = {
   busy: boolean;
   autoResumeOnAccountSwitch: boolean;
   autoResumeOn429: boolean;
+  rateLimitMaxRetries: number;
   scanning?: boolean;
   scanError?: string;
 };
@@ -38,7 +39,7 @@ const settings: {
     channel: "quota-recovery:set-auto-resume-429",
     label: "429 后自动继续",
     description:
-      "遇到 429 限流中断后，等待一段时间自动补发一条继续消息；连续中断最多自动继续 3 次。",
+      "遇到 429 限流中断后，等待一段时间自动补发一条继续消息；按下方设置的次数自动重试。",
   },
 ];
 type Invoke = (channel: string, ...args: unknown[]) => Promise<unknown>;
@@ -62,6 +63,7 @@ export function installQuotaRecovery(invoke: Invoke): void {
     busy: false,
     autoResumeOnAccountSwitch: false,
     autoResumeOn429: false,
+    rateLimitMaxRetries: 3,
   };
   let known = false;
   let settingKnown = false;
@@ -78,6 +80,9 @@ export function installQuotaRecovery(invoke: Invoke): void {
   let submit: HTMLButtonElement;
   let refresh: HTMLButtonElement;
   const settingInputs = new Map<RecoverySetting, HTMLInputElement>();
+  let retryLimitInput: HTMLInputElement;
+  let retryLimitSave: HTMLButtonElement;
+  let retryLimitDirty = false;
   let settingNotice: HTMLSpanElement;
   let renderedRowsState = "";
   let poll: ReturnType<typeof setTimeout> | undefined;
@@ -98,7 +103,9 @@ export function installQuotaRecovery(invoke: Invoke): void {
       !Array.isArray(next.entries) ||
       typeof next.busy !== "boolean" ||
       typeof next.autoResumeOnAccountSwitch !== "boolean" ||
-      typeof next.autoResumeOn429 !== "boolean"
+      typeof next.autoResumeOn429 !== "boolean" ||
+      !Number.isSafeInteger(next.rateLimitMaxRetries) ||
+      next.rateLimitMaxRetries < 0
     ) {
       throw new Error("Invalid quota recovery response");
     }
@@ -140,6 +147,11 @@ export function installQuotaRecovery(invoke: Invoke): void {
       input.indeterminate = !settingKnown;
       input.disabled = !settingKnown || savingSetting || submitting || loading;
     }
+    if (!retryLimitDirty)
+      retryLimitInput.value = String(snapshot.rateLimitMaxRetries);
+    retryLimitInput.disabled =
+      !settingKnown || savingSetting || submitting || loading;
+    retryLimitSave.disabled = retryLimitInput.disabled || !retryLimitDirty;
     settingNotice.textContent =
       settingError ||
       (savingSetting
@@ -168,6 +180,7 @@ export function installQuotaRecovery(invoke: Invoke): void {
     const rowsState = JSON.stringify([
       snapshot.entries,
       snapshot.autoResumeOn429,
+      snapshot.rateLimitMaxRetries,
       busy,
       loading,
       uncertain,
@@ -202,7 +215,7 @@ export function installQuotaRecovery(invoke: Invoke): void {
         if (entry.reason === "rateLimit") {
           meta.textContent += " · 429 限流";
           if (typeof entry.autoRetryCount === "number") {
-            meta.textContent += ` · 已自动尝试 ${entry.autoRetryCount}/3 次`;
+            meta.textContent += ` · 已自动尝试 ${entry.autoRetryCount}${snapshot.rateLimitMaxRetries === 0 ? " 次（无限重试）" : `/${snapshot.rateLimitMaxRetries} 次`}`;
           }
           if (
             snapshot.autoResumeOn429 &&
@@ -271,11 +284,12 @@ export function installQuotaRecovery(invoke: Invoke): void {
     return listRequest;
   }
   async function saveSetting(
-    key: RecoverySetting,
+    key: RecoverySetting | "rateLimitMaxRetries",
     channel: string,
-    enabled: boolean,
+    value: boolean | number,
   ) {
-    const input = settingInputs.get(key);
+    const input =
+      key === "rateLimitMaxRetries" ? retryLimitInput : settingInputs.get(key);
     if (!input || input.disabled) return;
     const restoreFocus = document.activeElement === input;
     savingSetting = true;
@@ -284,7 +298,8 @@ export function installQuotaRecovery(invoke: Invoke): void {
     // Finish any older read before saving, so its response cannot undo the UI.
     await listRequest;
     try {
-      apply(await invoke(channel, enabled));
+      apply(await invoke(channel, value));
+      if (key === "rateLimitMaxRetries") retryLimitDirty = false;
       settingError = "";
     } catch {
       settingKnown = false;
@@ -366,6 +381,48 @@ export function installQuotaRecovery(invoke: Invoke): void {
       setting.append(input, content);
       settingRows.append(setting);
     }
+    const retryLimitRow = document.createElement("div");
+    retryLimitRow.className = "quota-recovery-row quota-recovery-setting";
+    const retryLimitLabel = document.createElement("label");
+    retryLimitLabel.htmlFor = "quota-recovery-retry-limit";
+    retryLimitLabel.textContent = "429 自动重试次数";
+    const retryLimitHelp = document.createElement("span");
+    retryLimitHelp.id = "quota-recovery-retry-limit-help";
+    retryLimitHelp.className = "quota-recovery-meta";
+    retryLimitHelp.textContent = "默认 3 次；填 0 表示无限重试。";
+    retryLimitLabel.append(retryLimitHelp);
+    retryLimitInput = document.createElement("input");
+    retryLimitInput.id = retryLimitLabel.htmlFor;
+    retryLimitInput.type = "number";
+    retryLimitInput.min = "0";
+    retryLimitInput.step = "1";
+    retryLimitInput.max = String(Number.MAX_SAFE_INTEGER);
+    retryLimitInput.setAttribute("aria-describedby", retryLimitHelp.id);
+    retryLimitDirty = false;
+    retryLimitInput.oninput = () => {
+      retryLimitDirty = true;
+      retryLimitInput.setCustomValidity("");
+      retryLimitSave.disabled = false;
+    };
+    retryLimitSave = document.createElement("button");
+    retryLimitSave.type = "button";
+    retryLimitSave.textContent = "保存次数";
+    retryLimitSave.onclick = () => {
+      const value = retryLimitInput.valueAsNumber;
+      retryLimitInput.setCustomValidity(
+        Number.isSafeInteger(value) && value >= 0
+          ? ""
+          : "请输入非负整数（0 表示无限）",
+      );
+      if (!retryLimitInput.reportValidity()) return;
+      void saveSetting(
+        "rateLimitMaxRetries",
+        "quota-recovery:set-rate-limit-max-retries",
+        value,
+      );
+    };
+    retryLimitRow.append(retryLimitLabel, retryLimitInput, retryLimitSave);
+    settingRows.append(retryLimitRow);
     settingNotice = document.createElement("span");
     settingNotice.id = "quota-recovery-setting-notice";
     settingNotice.className = "quota-recovery-setting-notice";
@@ -421,7 +478,9 @@ html.electron-dark .codex-quota-recovery { color:var(--color-text-primary,#eee);
 .codex-quota-recovery p { font-size:13px; line-height:1.5; margin:0 0 16px; }
 .quota-recovery-rows { display:flex; flex-direction:column; gap:8px; max-height:48dvh; overflow:auto; }
 .quota-recovery-row { display:flex; gap:12px; align-items:flex-start; padding:12px; border:1px solid #8884; border-radius:8px; font-size:13px; }
-.quota-recovery-row input { flex:none; width:18px; height:18px; margin-top:2px; accent-color:currentColor; }
+.quota-recovery-row input[type="checkbox"] { flex:none; width:18px; height:18px; margin-top:2px; accent-color:currentColor; }
+.quota-recovery-row:has(input[type="number"]) { align-items:center; flex-wrap:wrap; }
+.quota-recovery-row input[type="number"] { width:100px; min-height:36px; padding:4px 8px; border:1px solid #8886; border-radius:6px; color:inherit; background:transparent; font:inherit; }
 .quota-recovery-row > span { min-width:0; overflow-wrap:anywhere; }
 .quota-recovery-row strong { display:block; font-weight:500; }
 .quota-recovery-setting { margin-bottom:16px; }
