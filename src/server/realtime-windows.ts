@@ -52,6 +52,10 @@ export class RealtimeWindows {
     return entry.window;
   }
 
+  getOwner(id: number): number | undefined {
+    return this.windows.get(id)?.owner;
+  }
+
   canAttach(id: number, owner: number): boolean {
     const entry = this.windows.get(id);
     return !entry || entry.owner === owner;

@@ -248,6 +248,7 @@ type IpcMainBridgeState = {
   setRendererWindowFactory?: (factory: () => Promise<RendererWindow>) => void;
   attachRealtimeWindow?: (window: RendererWindow, owner: number) => void;
   closeRealtimeWindow?: (id: number) => boolean;
+  getRealtimeOwnerId?: (id: number) => number | undefined;
   canAttachRealtimeWindow?: (id: number, owner: number) => boolean;
   sendToRenderer?: (
     webContentsId: number,
@@ -550,6 +551,7 @@ async function startIpcBridgeServer(options: ServerOptions): Promise<void> {
   bridgeState.attachRealtimeWindow = (window, owner) =>
     realtimeWindows.attach(window, owner);
   bridgeState.closeRealtimeWindow = (id) => realtimeWindows.close(id);
+  bridgeState.getRealtimeOwnerId = (id) => realtimeWindows.getOwner(id);
   bridgeState.canAttachRealtimeWindow = (id, owner) =>
     realtimeWindows.canAttach(id, owner);
   const rendererWindowFactory = new Promise<() => Promise<RendererWindow>>(

@@ -206,3 +206,85 @@ test('voice renderer cleanup stops both current and late microphone streams', as
   pending.shift()(stream); await assert.rejects(late, { name: 'AbortError' });
   assert.equal(stops, 2); listeners.pagehide(); assert.equal(stops, 2);
 });
+
+function navigationFixture({ web = true } = {}) {
+  const f = registry(), overlay = f.window(7), actions = [];
+  f.manager.attach(overlay, 6001);
+  const owner = { webContents: { id: 6001 }, isDestroyed: () => false,
+    isMinimized: () => false, isVisible: () => true, isFocused: () => false,
+    show: () => actions.push('owner-show'), focus: () => actions.push('owner-focus') };
+  const other = { ...owner, webContents: { id: 9001 } };
+  const windows = [owner, other];
+  const a = main.indexOf('function mFe(e) {');
+  const b = main.indexOf('function ', a + 10);
+  assert(a >= 0 && b > a, 'Review the pinned native navigation handler after Desktop upgrades');
+  let handler;
+  const context = vm.createContext({
+    HPe() {}, l: { BrowserWindow: { getAllWindows: () => windows },
+      ipcMain: { handle: (channel, callback) => { if (channel === 'message') handler = callback; }, on() {} } },
+    r: { tt: 'message' }, n: { ja: route => route.startsWith('/') },
+    __codexElectronIpcBridge: web ? { getRealtimeOwnerId: id => f.manager.getOwner(id) } : undefined,
+  });
+  vm.runInContext(main.slice(a, b) + ';this.install = mFe;', context);
+  context.install({
+    hotkeyWindowLifecycleManager: { hide: () => actions.push('hide') },
+    getPrimaryWindow: () => { actions.push('primary'); return other; },
+    showPrimaryWindow: () => actions.push('show-primary'),
+    ensureWindow: async () => other, createFreshWindow: async () => other,
+    navigateToRoute: (window, route) => actions.push(['navigate', window.webContents.id, route]),
+    isTrustedIpcEvent: event => !event.sender.isDestroyed(),
+  });
+  const sender = { id: overlay.webContents.id, isDestroyed: () => overlay.destroyed };
+  return { ...f, overlay, actions, windows, sender,
+    send: (message, origin = sender) => handler({ sender: origin }, message) };
+}
+
+test('native navigation handler sends voice handoff to its owner despite another primary tab', async () => {
+  const f = navigationFixture();
+  await f.send({ type: 'open-in-main-window', path: '/thread/voice' });
+  assert.deepEqual(f.actions, ['hide', 'owner-show', 'owner-focus', ['navigate', 6001, '/thread/voice']]);
+});
+
+test('voice navigation validates paths and never falls back when its owner is missing', async () => {
+  const f = navigationFixture();
+  await f.send({ type: 'open-in-main-window', path: 'https://untrusted.example/' });
+  assert.deepEqual(f.actions, []);
+  f.windows.shift();
+  await f.send({ type: 'open-in-main-window', path: '/thread/voice' });
+  await f.send({ type: 'open-current-main-window' });
+  assert.deepEqual(f.actions, []);
+  f.manager.closeOwner(6001);
+  assert.equal(f.manager.getOwner(f.sender.id), undefined);
+  await f.send({ type: 'open-in-main-window', path: '/thread/voice' });
+  assert.deepEqual(f.actions, []);
+});
+
+for (const web of [true, false]) {
+  test(`${web ? 'non-voice browser' : 'native'} navigation retains primary-window routing`, async () => {
+    const f = navigationFixture({ web });
+    await f.send({ type: 'open-in-main-window', path: '/thread/regular' },
+      { id: 10001, isDestroyed: () => false });
+    assert.deepEqual(f.actions, ['hide', 'primary', 'show-primary', ['navigate', 9001, '/thread/regular']]);
+  });
+}
+
+
+test('closed voice senders are rejected before native IPC routing after their binding is removed', () => {
+  const source = fs.readFileSync(path.join(root, 'src/server/electron/index.ts'), 'utf8');
+  const a = source.indexOf('function createIpcMainEvent(');
+  const b = source.indexOf('function createIpcMainStub()', a);
+  assert(a >= 0 && b > a);
+  const js = ts.transpileModule(source.slice(a, b), {
+    compilerOptions: { target: ts.ScriptTarget.ES2022 }
+  }).outputText;
+  const f = registry(), overlay = f.window(7);
+  overlay.isDestroyed = () => overlay.destroyed;
+  f.manager.attach(overlay, 6001);
+  const makeEvent = vm.runInNewContext(js + ';createIpcMainEvent', {
+    BrowserWindow: { fromId: id => id === overlay.id ? overlay : undefined }
+  });
+  assert.equal(makeEvent(overlay.id).sender.id, overlay.webContents.id);
+  f.manager.closeOwner(6001);
+  assert.equal(f.manager.getOwner(overlay.webContents.id), undefined);
+  assert.throws(() => makeEvent(overlay.id), /Renderer window 7 is closed/);
+});

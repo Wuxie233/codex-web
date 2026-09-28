@@ -351,3 +351,9 @@ startup begins; Desktop retains its 10-second connection deadline. Cancellation,
 timeout cleanup and successful-start timer removal remain unchanged. Controller
 checks are in `tests/realtime-voice.test.cjs`; actual audio still requires browser
 acceptance against the running service.
+
+Voice navigation from the browser overlay is directed to its launching tab using
+the server-side owner binding. If that owner window has gone away, the request is
+dropped rather than sent to another tab. Native and non-voice navigation retain
+the existing primary-window behavior. Owner bindings are removed with the overlay;
+closed renderers cannot submit trusted IPC messages.

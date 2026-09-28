@@ -105,3 +105,46 @@
        r == null ||
          n !== this.windowVisibilitySequence ||
          ((this.presentationVisibility ?? this.startupPresentationVisibility) ===
+@@ -137331,19 +137367,38 @@
+     ) {
+       let e = s.type === `open-current-main-window` ? null : s.path;
+       if (e != null && !n.ja(e)) return;
++      let ownerId = globalThis.__codexElectronIpcBridge?.getRealtimeOwnerId?.(
++        t.sender.id,
++      );
++      if (ownerId != null) {
++        let owner = l.BrowserWindow.getAllWindows().find(
++          (window) =>
++            !window.isDestroyed() && window.webContents.id === ownerId,
++        );
++        // A voice handoff belongs to its launching tab, never the last active tab.
++        if (owner == null) return;
++        a.hide();
++        owner.isMinimized() && owner.restore();
++        owner.show();
++        owner.focus();
++        e != null && D(owner, e);
++        s.appEntryAttribution != null &&
++          M?.(s.appEntryAttribution, owner.webContents);
++        return;
++      }
+       a.hide();
+-      let t = p(),
++      let primary = p(),
+         r =
+           s.appEntryAttribution != null &&
+-          (t == null || !t.isVisible() || !t.isFocused()),
+-        i = t != null || e == null ? await g() : await _(e);
++          (primary == null || !primary.isVisible() || !primary.isFocused()),
++        i = primary != null || e == null ? await g() : await _(e);
+       i &&
+         (s.type === `open-in-main-window`
+           ? m({ stealFocus: !0 })
+           : s.stealFocus === !0
+             ? m({ focusComposer: s.focusComposer, stealFocus: !0 })
+             : (i.isMinimized() && i.restore(), i.show(), i.focus()),
+-        t != null && e != null && D(i, e),
++        primary != null && e != null && D(i, e),
+         r &&
+           s.appEntryAttribution != null &&
+           M?.(s.appEntryAttribution, i.webContents));
