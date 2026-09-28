@@ -567,6 +567,17 @@ async function startIpcBridgeServer(options: ServerOptions): Promise<void> {
   };
 
   websocketServer.on("connection", (socket, request) => {
+    const params = new URL(request.url ?? "/", "http://localhost").searchParams;
+    // Recovery checks must not allocate a throwaway Desktop renderer just before
+    // the browser reloads and creates its actual renderer.
+    if (params.get("recoveryProbe") === "1" && !params.has("realtimeToken")) {
+      void rendererWindowFactory.then(() => {
+        if (socket.readyState === WebSocket.OPEN) {
+          socket.send(JSON.stringify({ type: "bridge-recovery-ready" }));
+        }
+      });
+      return;
+    }
     const token = new URL(
       request.url ?? "/",
       "http://localhost",
@@ -643,6 +654,23 @@ async function startIpcBridgeServer(options: ServerOptions): Promise<void> {
     });
 
     socket.on("message", async (rawData) => {
+      // Transport health is independent of slow app-view initialization.
+      try {
+        const probe = JSON.parse(String(rawData));
+        if (
+          probe?.type === "bridge-ping" &&
+          Number.isSafeInteger(probe.nonce)
+        ) {
+          if (socket.readyState === WebSocket.OPEN) {
+            socket.send(
+              JSON.stringify({ type: "bridge-pong", nonce: probe.nonce }),
+            );
+          }
+          return;
+        }
+      } catch {
+        /* Normal dispatch below reports malformed input. */
+      }
       const receivedAtMs = Date.now();
       const window = await rendererReady;
       if (!window || socket.readyState !== WebSocket.OPEN) return;

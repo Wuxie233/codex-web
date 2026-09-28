@@ -1,3 +1,4 @@
+import { installConnectionHealth } from "./connection-health";
 import {
   openBrowserUrl,
   openLocalHtml,
@@ -242,7 +243,7 @@ function handleIncomingMessage(message: MainToRendererMessage): void {
 }
 
 function flushOutboundQueue(): void {
-  if (!socket || socket.readyState !== WebSocket.OPEN) {
+  if (needsReload || !socket || socket.readyState !== WebSocket.OPEN) {
     return;
   }
   for (const message of outboundQueue.splice(0)) {
@@ -255,9 +256,12 @@ function scheduleReconnect(): void {
   if (reconnectTimeoutId !== null) {
     return;
   }
+  if (document.visibilityState === "hidden" || navigator.onLine === false)
+    return;
   reconnectTimeoutId = window.setTimeout(() => {
     reconnectTimeoutId = null;
     ensureSocket();
+    connectionHealth?.opened();
   }, RECONNECT_DELAY_MS);
 }
 
@@ -270,21 +274,32 @@ function ensureSocket(): void {
     return;
   }
 
-  socket = new WebSocket(
-    `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.host}/__backend/ipc${realtimeToken ? `?${new URLSearchParams({ realtimeToken })}` : ""}`,
+  // A delayed close event must not bypass port cleanup during foreground recovery.
+  if (socket) disconnectSocket(socket);
+  const current = new WebSocket(
+    `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.host}/__backend/ipc${realtimeToken ? `?${new URLSearchParams({ realtimeToken })}` : needsReload ? "?recoveryProbe=1" : ""}`,
   );
-  socket.addEventListener("open", () => {
+  socket = current;
+  current.addEventListener("open", () => {
+    if (socket !== current) return;
     // App-host RPC transfers MessagePorts once at startup. A new connection needs
     // a fresh app view; replaying requests against the closed ports cannot recover it.
-    if (needsReload) {
-      window.location.reload();
-      return;
-    }
+    if (needsReload) return;
+    connectionHealth?.opened();
     flushOutboundQueue();
   });
-  socket.addEventListener("message", (event) => {
+  current.addEventListener("message", (event) => {
+    if (socket !== current) return;
     try {
       const message = JSON.parse(String(event.data)) as MainToRendererMessage;
+      if (connectionHealth?.received(message)) return;
+      if (
+        (message as { type: string }).type === "bridge-recovery-ready" &&
+        needsReload
+      ) {
+        window.location.reload();
+        return;
+      }
       handleIncomingMessage(message);
     } catch (error) {
       console.error(
@@ -293,30 +308,56 @@ function ensureSocket(): void {
       );
     }
   });
-  socket.addEventListener("close", () => {
-    closeRealtimeWindows();
-    disposeRealtimeMedia?.();
-    needsReload = true;
-    const error = new Error("Connection to Codex was lost");
-    for (const pending of pendingInvokes.values()) pending.reject(error);
-    pendingInvokes.clear();
-    for (const pending of pendingDirectoryEntries.values())
-      pending.reject(error);
-    pendingDirectoryEntries.clear();
-    outboundQueue.length = 0;
-    for (const port of messagePorts.values()) {
-      port.close();
-    }
-    messagePorts.clear();
+  current.addEventListener("close", () => {
+    if (socket !== current) return;
+    disconnectSocket(current);
     scheduleReconnect();
   });
-  socket.addEventListener("error", () => {
+  current.addEventListener("error", () => {
+    if (socket !== current) return;
+    disconnectSocket(current);
     scheduleReconnect();
   });
 }
 
+function disconnectSocket(current: WebSocket): void {
+  if (socket !== current) return;
+  socket = null;
+  connectionHealth?.disconnected();
+  closeRealtimeWindows();
+  disposeRealtimeMedia?.();
+  needsReload = true;
+  const error = new Error("Connection to Codex was lost");
+  for (const pending of pendingInvokes.values()) pending.reject(error);
+  pendingInvokes.clear();
+  for (const pending of pendingDirectoryEntries.values()) pending.reject(error);
+  pendingDirectoryEntries.clear();
+  outboundQueue.length = 0;
+  for (const port of messagePorts.values()) port.close();
+  messagePorts.clear();
+  current.close();
+}
+
+const connectionHealth = realtimeToken
+  ? null
+  : installConnectionHealth({
+      getSocket: () => socket,
+      reconnect: () => {
+        if (navigator.onLine === false) return;
+        if (reconnectTimeoutId !== null) {
+          window.clearTimeout(reconnectTimeoutId);
+          reconnectTimeoutId = null;
+        }
+        ensureSocket();
+      },
+      invalidate: (current) => {
+        disconnectSocket(current);
+        scheduleReconnect();
+      },
+    });
+
 function enqueueMessage(message: RendererToMainMessage): void {
-  if (realtimeToken && needsReload) return;
+  if (needsReload) return;
   outboundQueue.push(message);
   ensureSocket();
   flushOutboundQueue();
@@ -328,8 +369,14 @@ function nextRequestId(): string {
 }
 
 function invokeMain(channel: string, args: unknown[]): Promise<unknown> {
-  if (realtimeToken && needsReload)
-    return Promise.reject(new Error("Voice renderer closed"));
+  if (needsReload)
+    return Promise.reject(
+      new Error(
+        realtimeToken
+          ? "Voice renderer closed"
+          : "Connection to Codex was lost",
+      ),
+    );
   const requestId = nextRequestId();
   return new Promise((resolve, reject) => {
     pendingInvokes.set(requestId, { resolve, reject });
@@ -390,6 +437,8 @@ function isOpenInBrowserMessage(value: unknown): value is {
 function requestWorkspaceDirectoryEntries(
   directoryPath: string | null,
 ): Promise<WorkspaceDirectoryEntries> {
+  if (needsReload)
+    return Promise.reject(new Error("Connection to Codex was lost"));
   const requestId = nextRequestId();
   return new Promise((resolve, reject) => {
     pendingDirectoryEntries.set(requestId, { resolve, reject });
@@ -660,6 +709,7 @@ export const ipcRenderer = {
 };
 
 ensureSocket();
+connectionHealth?.opened();
 installQuotaRecovery((channel, ...args) => ipcRenderer.invoke(channel, ...args));
 
 export const contextBridge = {

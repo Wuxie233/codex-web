@@ -100,3 +100,14 @@ After upgrading Desktop, revalidate both realtime patches and run
 Browser checks should use the default autoplay policy and cover microphone denial,
 cancel, end, reentry, tab isolation, and actual inbound/outbound media. Simulated
 microphone tests do not establish physical-device or mobile-browser acceptance.
+
+## Mobile connection recovery
+
+The browser probes IPC transport health on foreground/online return and while
+visible. Missing replies expire after 4 seconds; connection attempts after
+8 seconds. Hidden pages defer retries until return. A disconnected renderer still
+requires a reload because its native MessagePorts cannot be reused. Recovery uses
+`recoveryProbe=1` to check server readiness without allocating a throwaway renderer.
+Never replay uncertain writes; reject new invokes while recovery is pending.
+Verify with `node --test tests/connection-recovery.test.cjs` and a real mobile
+background/foreground cycle; simulated timers do not establish device latency.
