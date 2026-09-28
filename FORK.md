@@ -292,7 +292,15 @@ never automatically replayed.
 The manual list request checks the 100 most recently updated unarchived interactive
 threads. Settings are shared across tabs and persist alongside the queue in
 `$CODEX_HOME/codex-web-quota-recovery.json.settings.json`. Closing the dialog does
-not disable automatic recovery; turn it off with its checkbox.
+not disable automatic recovery; turn it off with its checkbox. The server also
+checks for missed failure notifications 30 seconds after each background scan
+finishes, even with every browser tab closed. Startup scans all history; later
+scans revisit recently updated tasks, with a full scan on the first pass starting five minutes after the previous
+successful full scan began, to catch delayed history indexing. Scan errors are retried
+without advancing the history checkpoint. Disabling automatic 429 recovery,
+removing a host, or disposing the server cancels its background timers.
+Browser-provided App tools still require a connected browser; background retry
+does not remove that tool requirement.
 The dialog hides resumed and skipped records; the server retains them for
 deduplication. Sending and uncertain results remain visible until resolved.
 

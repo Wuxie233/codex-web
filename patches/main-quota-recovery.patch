@@ -84,3 +84,11 @@
      if (t.id === `local` && this.options.onAppServerSqliteRecovery != null) {
        let e = this.options.onAppServerSqliteRecovery;
        m.registerInternalNotificationHandler((t) => {
+@@ -135936,6 +136013,7 @@
+   }
+   disposeRemoteConnection(e) {
++    globalThis.__codexQuotaRecovery?.unregisterHost(e);
+     this.threadCatalogSyncManager?.detachSource(e);
+     let t = this.appServerConnectionRegistry.getMaybeConnection(e);
+     t &&
+       (t.dispose(),

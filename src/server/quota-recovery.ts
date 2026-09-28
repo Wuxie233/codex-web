@@ -14,6 +14,9 @@ export { RATE_LIMIT_CONTINUATION } from "./rate-limit-recovery";
 
 export const CONTINUATION =
   "上一轮因账号额度不足而中断，现在账号已更新或额度已恢复，请继续之前未完成的工作。先核对当前进度和已有执行结果，再从中断处接着处理，避免重复执行已完成的操作。";
+const RATE_SCAN_INTERVAL = 30000;
+const RATE_SCAN_OVERLAP = 60;
+const RATE_FULL_SCAN_INTERVAL = 300000;
 type Status =
   | "pending"
   | "sending"
@@ -170,6 +173,9 @@ export class QuotaRecovery {
   private rateChains = new Map<string, RateLimitChain>();
   private rateTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private rateInFlight = new Set<string>();
+  private rateScanTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private rateScanSince = new Map<string, number>();
+  private rateFullScanAt = new Map<string, number>();
   constructor(
     private file: string,
     private clock: RecoveryClock = recoveryClock,
@@ -223,8 +229,23 @@ export class QuotaRecovery {
     }
   }
   registerHost(host: string, adapter: Adapter) {
+    this.unregisterHost(host);
     this.hosts.set(host, adapter);
     if (this.autoResumeOn429) this.startRateScan(host);
+  }
+  unregisterHost(host: string) {
+    this.hosts.delete(host);
+    this.discovered.delete(host);
+    this.rateScanSince.delete(host);
+    this.rateFullScanAt.delete(host);
+    const scanTimer = this.rateScanTimers.get(host);
+    if (scanTimer) this.clock.clearTimeout(scanTimer);
+    this.rateScanTimers.delete(host);
+    for (const [id, timer] of this.rateTimers) {
+      if (this.entries.get(id)?.hostId !== host) continue;
+      this.clock.clearTimeout(timer);
+      this.rateTimers.delete(id);
+    }
   }
   setAutoResume(value: unknown) {
     this.setPreference(value);
@@ -264,6 +285,7 @@ export class QuotaRecovery {
       this.autoResumeOn429 = value;
       this.rateGeneration++;
       this.cancelRateTimers();
+      this.cancelRateScans();
       if (value) for (const host of this.hosts.keys()) this.startRateScan(host);
     }
     return this.visibleSnapshot();
@@ -289,6 +311,7 @@ export class QuotaRecovery {
       this.rateLimitMaxRetries = value;
       this.rateGeneration++;
       this.cancelRateTimers();
+      this.cancelRateScans();
       for (const entry of this.entries.values()) {
         if (entry.reason !== "rateLimit" || entry.status !== "pending")
           continue;
@@ -317,34 +340,83 @@ export class QuotaRecovery {
       this.clock.clearTimeout(timer);
     this.rateTimers.clear();
   }
+  private cancelRateScans() {
+    for (const timer of this.rateScanTimers.values())
+      this.clock.clearTimeout(timer);
+    this.rateScanTimers.clear();
+    this.rateScanSince.clear();
+    this.rateFullScanAt.clear();
+  }
   // Explicit cleanup is useful to embedders; timers never keep the server alive.
   dispose() {
     this.disposed = true;
     this.rateGeneration++;
     this.cancelRateTimers();
+    this.cancelRateScans();
   }
   private startRateScan(host: string) {
     const generation = this.rateGeneration;
+    const adapter = this.hosts.get(host);
     const allowed = () =>
-      this.autoResumeOn429 && generation === this.rateGeneration;
+      !this.disposed &&
+      this.autoResumeOn429 &&
+      generation === this.rateGeneration &&
+      this.hosts.get(host) === adapter;
+    if (!adapter || !allowed()) return;
+    const startedAt = this.clock.now();
+    const full =
+      startedAt - (this.rateFullScanAt.get(host) ?? -Infinity) >=
+      RATE_FULL_SCAN_INTERVAL;
+    const since = full ? undefined : this.rateScanSince.get(host);
+    let newest = since ?? -Infinity;
     void (async () => {
       let cursor: string | null = null;
+      let complete = true;
       const seen = new Set<string>();
       do {
         await this.waitUntilIdle();
         if (!allowed()) return;
         while (this.busy || this.scanning) await this.waitUntilIdle();
         if (!allowed()) return;
-        const adapter = this.hosts.get(host);
-        if (!adapter) return;
         this.scanning = (async () => {
           await this.resolveEntries();
+          if (!allowed()) return;
           const page = await bounded(
             adapter.listThreads(this.historyParams(cursor)),
           );
-          cursor = page.nextCursor ?? null;
-          await this.discoverCandidates(host, adapter, page.data, allowed);
-          await this.resolveEntries();
+          if (!allowed()) return;
+          // Use host timestamps to avoid clock skew; periodic full scans cover late indexing.
+          for (const thread of page.data) {
+            if (
+              typeof thread.updatedAt === "number" &&
+              Number.isFinite(thread.updatedAt)
+            )
+              newest = Math.max(newest, thread.updatedAt);
+          }
+          // History is sorted newest first. Overlap covers second-resolution timestamps.
+          const candidates =
+            since === undefined
+              ? page.data
+              : page.data.filter(
+                  (thread) =>
+                    typeof thread.updatedAt !== "number" ||
+                    !Number.isFinite(thread.updatedAt) ||
+                    thread.updatedAt >= since - RATE_SCAN_OVERLAP,
+                );
+          cursor =
+            candidates.length < page.data.length &&
+            page.data.every(
+              (thread) =>
+                typeof thread.updatedAt === "number" &&
+                Number.isFinite(thread.updatedAt),
+            )
+              ? null
+              : (page.nextCursor ?? null);
+          if (
+            !(await this.discoverCandidates(host, adapter, candidates, allowed))
+          )
+            complete = false;
+          if (allowed()) await this.resolveEntries();
         })().finally(() => {
           this.scanning = undefined;
         });
@@ -354,9 +426,24 @@ export class QuotaRecovery {
         if (cursor && seen.has(cursor)) throw Error("重复的历史分页游标");
         if (cursor) seen.add(cursor);
       } while (cursor);
-    })().catch(() => {
-      this.scanError = "部分任务暂时无法读取，请检查连接后刷新。";
-    });
+      if (complete && allowed()) {
+        if (Number.isFinite(newest)) this.rateScanSince.set(host, newest);
+        if (full) this.rateFullScanAt.set(host, startedAt);
+      }
+    })()
+      .catch(() => {
+        if (allowed())
+          this.scanError = "部分任务暂时无法读取，后台将自动重试。";
+      })
+      .finally(() => {
+        if (!allowed()) return;
+        const timer = this.clock.setTimeout(() => {
+          this.rateScanTimers.delete(host);
+          this.startRateScan(host);
+        }, RATE_SCAN_INTERVAL);
+        timer.unref?.();
+        this.rateScanTimers.set(host, timer);
+      });
   }
   private scheduleRateEntries() {
     if (!this.autoResumeOn429 || this.disposed) return;
@@ -397,6 +484,8 @@ export class QuotaRecovery {
   private rateAllowed(entry: Entry, generation: number, quotaRevision: number) {
     const chain = this.rateChains.get(this.key(entry.hostId, entry.threadId));
     return (
+      !this.disposed &&
+      this.hosts.has(entry.hostId) &&
       this.autoResumeOn429 &&
       generation === this.rateGeneration &&
       quotaRevision === this.quotaRevision &&
@@ -676,6 +765,8 @@ export class QuotaRecovery {
     const terminal =
       (event.method === "turn/completed" && p.turn?.status === "failed") ||
       (event.method === "error" && p.willRetry === false);
+    if (event.method === "error" && terminal)
+      this.revisions.set(key, (this.revisions.get(key) ?? 0) + 1);
     const chain = this.rateChains.get(key);
     if (chain) {
       if (
@@ -1007,8 +1098,18 @@ export class QuotaRecovery {
       Array.from({ length: 4 }, async () => {
         while (candidates.length && proceed()) {
           const item = candidates.shift()!;
+          const key = this.key(host, item.id);
+          const revision = this.revisions.get(key) ?? 0;
           try {
             const thread = await bounded(adapter.readThread(item.id), 5000);
+            if (
+              !thread ||
+              !proceed() ||
+              revision !== (this.revisions.get(key) ?? 0)
+            ) {
+              complete = false;
+              continue;
+            }
             if (thread) this.reconcileRateChain(host, thread);
             const last = thread?.turns?.at(-1);
             const reason = recoveryReason(last?.error);
@@ -1188,7 +1289,15 @@ export class QuotaRecovery {
               },
               () => {
                 if (
+                  rateAttempt &&
+                  (this.disposed || this.hosts.get(entry.hostId) !== adapter)
+                ) {
+                  cancelledByRatePreference = true;
+                  throw Error("任务所在主机未连接");
+                }
+                if (
                   !attemptOpen ||
+                  this.hosts.get(entry.hostId) !== adapter ||
                   revision !== (this.revisions.get(key) ?? 0) ||
                   sourceRevision !== (this.revisions.get(sourceKey) ?? 0) ||
                   this.quotaRevision !== quotaRevision ||

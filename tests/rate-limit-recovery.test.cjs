@@ -215,8 +215,8 @@ test("only terminal 429 enters queue, duplicate error and completion schedule on
   });
   f.fail();
   assert.equal(f.recovery.snapshot().entries.length, 1);
-  assert.equal(f.timers.size, 1);
-  assert.ok([...f.timers][0].unreferenced);
+  assert.equal(f.timers.size, 2); // One discovery timer and one continuation.
+  assert.ok([...f.timers].every((timer) => timer.unreferenced));
   await f.advance(29999);
   assert.equal(f.sent.length, 0);
   await f.advance(1);
@@ -671,7 +671,10 @@ test("raising an exhausted limit resumes waiting and lowering preserves consumed
   await flush();
   await f.advance(30000);
   f.fail("one", "auto-1");
-  assert.equal(f.timers.size, 0);
+  assert.equal(
+    f.recovery.snapshot().entries.find((e) => e.turnId === "auto-1").retryAt,
+    undefined,
+  );
   f.recovery.setRateLimitMaxRetries(0);
   await f.advance(59999);
   assert.equal(f.sent.length, 1);
@@ -679,7 +682,10 @@ test("raising an exhausted limit resumes waiting and lowering preserves consumed
   assert.equal(f.sent.length, 2);
   f.fail("one", "auto-2");
   f.recovery.setRateLimitMaxRetries(1);
-  assert.equal(f.timers.size, 0);
+  assert.equal(
+    f.recovery.snapshot().entries.find((e) => e.turnId === "auto-2").retryAt,
+    undefined,
+  );
   f.reload();
   await flush();
   await f.advance(1000000);
@@ -798,4 +804,224 @@ test("raising the limit resumes an exhausted root failure discovered through a c
   await f.advance(1);
   assert.equal(f.sent.length, 3);
   assert.equal(f.sent[2].threadId, "root");
+});
+
+test("background scan discovers failures without a renderer, list call or notification", async (t) => {
+  const f = fixture(t);
+  f.recovery.setAutoResume429(true);
+  await flush();
+  f.reload(); // Persisted preference starts discovery without opening a browser.
+  await flush();
+  f.threads.set("offline", {
+    id: "offline",
+    status: { type: "idle" },
+    updatedAt: 1000,
+    turns: [{ id: "missed-event", status: "failed", error: rate }],
+  });
+  await f.advance(30000);
+  assert.equal(f.sent.length, 0);
+  await f.advance(30000);
+  assert.deepEqual(
+    f.sent.map((x) => x.threadId),
+    ["offline"],
+  );
+  await f.advance(30000);
+  assert.equal(f.sent.length, 1);
+});
+
+test("background scans retry failed reads and do not overlap slow scans", async (t) => {
+  const f = fixture(t);
+  let calls = 0,
+    release;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  f.adapter.listThreads = async (params) => {
+    if (params.archived) return { data: [] };
+    calls++;
+    if (calls === 1) await gate;
+    if (calls === 2) throw Error("temporarily offline");
+    return { data: [] };
+  };
+  f.recovery.setAutoResume429(true);
+  await flush();
+  await f.advance(90000);
+  assert.equal(calls, 1);
+  release();
+  await flush();
+  await f.advance(30000);
+  assert.equal(calls, 2);
+  await f.advance(30000);
+  assert.equal(calls, 3);
+  f.recovery.setAutoResume429(false);
+  assert.equal(f.timers.size, 0);
+  await f.advance(300000);
+  assert.equal(calls, 3);
+});
+
+test("disconnect or dispose during discovery prevents late entries and future scans", async (t) => {
+  for (const stop of ["unregisterHost", "dispose"])
+    await t.test(stop, async (t) => {
+      const f = fixture(t);
+      let release;
+      const pending = new Promise((resolve) => {
+        release = resolve;
+      });
+      f.adapter.listThreads = async () => ({ data: [{ id: "late" }] });
+      f.adapter.readThread = async () => pending;
+      f.recovery.setAutoResume429(true);
+      await flush();
+      f.recovery[stop]("local");
+      release({
+        id: "late",
+        turns: [{ id: "bad", status: "failed", error: rate }],
+      });
+      await flush();
+      assert.equal(f.recovery.snapshot().entries.length, 0);
+      assert.equal(f.timers.size, 0);
+      await f.advance(300000);
+      assert.equal(f.sent.length, 0);
+    });
+});
+
+test("periodic full scan catches delayed old timestamps while recent scans stay bounded", async (t) => {
+  const f = fixture(t);
+  let oldReads = 0;
+  f.threads.set("recent", {
+    id: "recent",
+    updatedAt: 900,
+    turns: [{ id: "done", status: "completed" }],
+  });
+  f.threads.set("old", {
+    id: "old",
+    status: { type: "idle" },
+    updatedAt: 800,
+    turns: [{ id: "done", status: "completed" }],
+  });
+  const read = f.adapter.readThread;
+  f.adapter.readThread = async (id) => {
+    if (id === "old") oldReads++;
+    return read(id);
+  };
+  f.recovery.setAutoResume429(true);
+  await flush();
+  assert.equal(oldReads, 1);
+  f.threads
+    .get("old")
+    .turns.push({ id: "delayed", status: "failed", error: rate });
+  await f.advance(30000);
+  assert.equal(oldReads, 1);
+  assert.equal(f.sent.length, 0);
+  await f.advance(270000);
+  assert.ok(f.recovery.snapshot().entries.some((x) => x.turnId === "delayed"));
+  await f.advance(30000);
+  assert.equal(f.sent.length, 1);
+});
+
+test("failed candidate reads retain the scan watermark for the next background pass", async (t) => {
+  const f = fixture(t);
+  let fail = true;
+  f.threads.set("missed", {
+    id: "missed",
+    updatedAt: 1,
+    status: { type: "idle" },
+    turns: [{ id: "failed", status: "failed", error: rate }],
+  });
+  f.threads.set("newer", {
+    id: "newer",
+    updatedAt: 1000,
+    turns: [{ id: "ok", status: "completed" }],
+  });
+  const read = f.adapter.readThread;
+  f.adapter.readThread = async (id) =>
+    id === "missed" && fail ? null : read(id);
+  f.recovery.setAutoResume429(true);
+  await flush();
+  assert.equal(f.recovery.snapshot().entries.length, 0);
+  fail = false;
+  await f.advance(30000);
+  assert.ok(f.recovery.snapshot().entries.some((x) => x.threadId === "missed"));
+});
+
+test("late history reads cannot erase the budget of a newer terminal error", async (t) => {
+  const f = fixture(t);
+  f.fail();
+  f.recovery.setAutoResume429(true);
+  await flush();
+  await f.advance(30000);
+  let release;
+  const pending = new Promise((resolve) => {
+    release = resolve;
+  });
+  const read = f.adapter.readThread;
+  let held = false;
+  f.adapter.readThread = async (id) => {
+    if (!held) {
+      held = true;
+      return pending;
+    }
+    return read(id);
+  };
+  await f.advance(30000);
+  const turn = f.threads.get("one").turns.at(-1);
+  Object.assign(turn, { status: "failed", error: rate });
+  f.recovery.observe("local", {
+    method: "error",
+    params: { threadId: "one", turnId: turn.id, error: rate, willRetry: false },
+  });
+  release({ id: "one", turns: [{ id: "stale-success", status: "completed" }] });
+  await flush();
+  const settings = JSON.parse(
+    fs.readFileSync(f.file + ".settings.json", "utf8"),
+  );
+  assert.equal(Object.values(settings.rateLimitChains)[0].count, 1);
+});
+
+test("quota exhaustion blocks existing retries without stopping background discovery", async (t) => {
+  const f = fixture(t);
+  f.recovery.setAutoResume429(true);
+  await flush();
+  f.fail("blocked");
+  f.fail("quota", "exhausted", quota);
+  f.threads.set("fresh", {
+    id: "fresh",
+    status: { type: "idle" },
+    turns: [{ id: "new-failure", status: "failed", error: rate }],
+  });
+  await f.advance(30000);
+  assert.ok(f.recovery.snapshot().entries.some((x) => x.threadId === "fresh"));
+  await f.advance(30000);
+  assert.deepEqual(
+    f.sent.map((x) => x.threadId),
+    ["fresh"],
+  );
+});
+
+test("mixed missing timestamps do not stop incremental discovery before later pages", async (t) => {
+  const f = fixture(t);
+  f.threads.set("recent", { id: "recent", updatedAt: 1000, turns: [] });
+  f.recovery.setAutoResume429(true);
+  await flush();
+  f.threads.set("missing", { id: "missing", turns: [] });
+  f.threads.set("later", {
+    id: "later",
+    status: { type: "idle" },
+    turns: [{ id: "failed", status: "failed", error: rate }],
+  });
+  f.adapter.listThreads = async (params) =>
+    params.archived
+      ? { data: [] }
+      : params.cursor
+        ? { data: [f.threads.get("later")] }
+        : {
+            data: [
+              { ...f.threads.get("recent"), updatedAt: 1 },
+              f.threads.get("missing"),
+            ],
+            nextCursor: "page2",
+          };
+  await f.advance(30000);
+  assert.ok(
+    f.recovery.snapshot().entries.some((entry) => entry.threadId === "later"),
+  );
 });

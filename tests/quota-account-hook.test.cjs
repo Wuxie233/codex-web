@@ -11,6 +11,7 @@ function hook() {
       path.join(__dirname, "../patches/main-quota-recovery.patch"),
       "utf8",
     )
+    .split(/^@@.*$/m)[1]
     .split("\n")
     .filter((line) => line.startsWith("+") && !line.startsWith("+++"))
     .map((line) => line.slice(1))
