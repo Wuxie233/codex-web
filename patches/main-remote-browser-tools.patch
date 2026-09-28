@@ -1,0 +1,137 @@
+--- a/.vite/build/main-C5K7o1Hr.js
++++ b/.vite/build/main-C5K7o1Hr.js
+@@ -134118,6 +134118,126 @@
+ `),
+       );
+ }
++// Codex Web remote browser tools: requests are routed by the daemon's thread ID.
++function codexWebInstallRemoteBrowserTools(connection, hostId, reveal) {
++  const names = new Set([`browser_tabs`, `browser_open`, `browser_action`, `browser_evaluate`]);
++  const calls = new Map();
++  const seen = new Set();
++  const pending = new Map();
++  const fail = (message) => ({
++    success: false,
++    contentItems: [{ type: `inputText`, text: message }],
++  });
++  const cancelled = `Browser operation cancelled. An already dispatched action may have executed. Do not automatically retry.`;
++  connection.registerInternalNotificationHandler((notification) => {
++    if (notification.method !== `turn/completed`) return;
++    const params = notification.params;
++    if (!params || ![`interrupted`, `failed`].includes(params.turn?.status)) return;
++    for (const entry of pending.values()) {
++      if (entry.threadId === params.threadId && entry.turnId === params.turn.id) entry.controller.abort();
++    }
++  });
++  connection.registerInternalServerRequestHandler({
++    methods: [`item/tool/call`],
++    handler: (request) => {
++      const params = request.params;
++      if (!params || !names.has(params.tool) || (params.namespace != null && params.namespace !== `codex_app`)) return null;
++      if (hostId !== `local`) return Promise.resolve(fail(`The shared browser is available only for local tasks.`));
++      if (typeof params.threadId !== `string` || !params.threadId.trim() ||
++          typeof params.callId !== `string` || !params.callId.trim()) {
++        return Promise.resolve(fail(`The browser request is missing its trusted task or call identity.`));
++      }
++      const key = JSON.stringify([params.threadId, params.turnId ?? null, params.callId]);
++      if (calls.has(key)) return calls.get(key);
++      if (seen.has(key)) return Promise.resolve(fail(`This browser call was already dispatched. Its cached result is unavailable; its outcome may be unknown. It was not replayed.`));
++      if (seen.size >= 65536) return Promise.resolve(fail(`Browser call history is full; new operations are unavailable for this connection.`));
++      if (pending.size >= 32) return Promise.resolve(fail(`Too many browser operations are already running.`));
++      const controller = new AbortController();
++      seen.add(key);
++      pending.set(key, { threadId: params.threadId, turnId: params.turnId, controller });
++      let timer;
++      const interrupted = new Promise((resolve) => {
++        controller.signal.addEventListener(`abort`, () => resolve(fail(cancelled)), { once: true });
++        timer = setTimeout(() => {
++          resolve(fail(`Browser operation timed out; its execution outcome may be unknown. Do not automatically retry.`));
++          controller.abort();
++        }, 60000);
++      });
++      const execute = async () => {
++        try {
++          let args = params.arguments ?? {};
++          if (typeof args === `string`) args = JSON.parse(args);
++          if (!args || typeof args !== `object` || Array.isArray(args)) throw new Error(`Browser arguments must be an object.`);
++          for (const field of [`threadId`, `conversationId`, `hostId`]) {
++            if (Object.prototype.hasOwnProperty.call(args, field)) throw new Error(`Browser task identity is supplied by the runtime, not tool arguments.`);
++          }
++          if (controller.signal.aborted) return fail(cancelled);
++          const browser = globalThis.__codexRemoteBrowser;
++          if (!browser) throw new Error(`The shared browser runtime is unavailable.`);
++          if (params.tool === `browser_tabs`) {
++            return { success: true, contentItems: [{ type: `inputText`, text: JSON.stringify({ tabs: browser.list(params.threadId) }) }] };
++          }
++          if (args.browserTabId != null && (typeof args.browserTabId !== `string` || !args.browserTabId.trim())) throw new Error(`browserTabId must be a nonempty string.`);
++          const existing = browser.list(params.threadId);
++          const browserTabId = args.browserTabId ?? existing[0]?.browserTabId ?? `default`;
++          const route = { conversationId: params.threadId, browserTabId };
++          let result;
++          if (params.tool === `browser_open`) {
++            if (args.url != null && typeof args.url !== `string`) throw new Error(`url must be a string.`);
++            result = await browser.command({ ...route, action: `open`, ...(args.url == null ? {} : { url: args.url }) }, controller.signal);
++          } else if (params.tool === `browser_evaluate`) {
++            if (typeof args.expression !== `string` || !args.expression.trim()) throw new Error(`expression must be a nonempty JavaScript expression.`);
++            result = await browser.evaluate(route, args.expression, controller.signal);
++          } else {
++            const allowed = new Set([`navigate`, `back`, `forward`, `reload`, `stop`, `state`, `resize`, `mouse`, `scroll`, `key`, `text`, `inspect`, `screenshot`, `close`]);
++            if (!allowed.has(args.action)) throw new Error(`Unsupported browser action.`);
++            const input = { ...route, action: args.action };
++            for (const field of [`url`, `width`, `height`, `eventType`, `x`, `y`, `button`, `deltaX`, `deltaY`, `key`, `text`]) {
++              if (args[field] != null) input[field] = args[field];
++            }
++            result = await browser.command(input, controller.signal);
++          }
++          if (controller.signal.aborted) return fail(cancelled);
++          const items = [];
++          const screenshot = params.tool === `browser_action` && args.action === `screenshot`;
++          if (screenshot) {
++            const picture = result.value;
++            if (!picture || ![`image/png`, `image/jpeg`].includes(picture.mimeType) || typeof picture.data !== `string` || !picture.data) {
++              throw new Error(`The browser did not return a valid screenshot.`);
++            }
++            items.push({ type: `inputImage`, imageUrl: `data:${picture.mimeType};base64,${picture.data}` });
++          }
++          const summary = JSON.stringify(screenshot ? { state: result.state } : result);
++          items.unshift({ type: `inputText`, text: summary.length > 200000 ? summary.slice(0, 200000) + `\n[Browser result truncated]` : summary });
++          if (params.tool === `browser_open`) {
++            try {
++              reveal({ type: `open-browser-tab`, conversationId: params.threadId, browserTabId: result.state.browserTabId,
++                initialUrl: result.state.url, source: `manual`, initiator: `window_open` });
++            } catch {
++              items.push({ type: `inputText`, text: `The browser opened, but its panel could not be revealed automatically.` });
++            }
++          }
++          return { success: true, contentItems: items };
++        } catch (error) {
++          if (controller.signal.aborted) return fail(cancelled);
++          return fail(`Browser operation failed: ${error instanceof Error ? error.message : String(error)}. An already dispatched action may have executed. Do not automatically retry.`);
++        }
++      };
++      const result = Promise.race([execute(), interrupted]).finally(() => {
++        clearTimeout(timer);
++        pending.delete(key);
++        while (calls.size > 128) {
++          const stale = [...calls.keys()].find((id) => !pending.has(id));
++          if (stale == null) break;
++          calls.delete(stale);
++        }
++      });
++      calls.set(key, result);
++      return result;
++    },
++  });
++}
++// End Codex Web remote browser tools.
+ var FPe = class {
+   appServerConnectionRegistry;
+   publishedStatsig;
+@@ -135904,6 +136024,7 @@
+           e(n));
+       });
+     }
++    codexWebInstallRemoteBrowserTools(m, e, (message) => this.options.windowManager.sendMessageToAllWindows(message));
+     return (
+       m.registerInternalServerRequestHandler({
+         methods: [

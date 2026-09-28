@@ -196,30 +196,18 @@ assets after applying the patch so the compressed delivery overlay is updated.
 
 ### Native browser capability
 
-The Web bridge does not implement Electron's native browser surface. Advertising
-`browser.in-app` lets users open an empty pane and causes native window geometry
-requests to fail. `patches/webview-disable-native-browser.patch` resolves that
-capability as unavailable before consulting Desktop policy or daemon config.
-Desktop's existing availability checks then hide the launcher, skip saved native
-browser tabs, and disable its native browser agent UI. Other capabilities and the
-daemon configuration are unchanged; ordinary web URLs use the external browser
-path. This does not add embedded browsing or local HTML preview support.
+The Web app keeps Desktop's browser tab and toolbar components, and replaces the
+Electron guest view with `src/browser/remote-browser.ts`. The capability patch
+only advertises `browser.in-app` when that adapter is present. Do not enable the
+flag without a working browser host, or restore Electron's stub WebContentsView.
+HTTP(S) links are consumed once by the preload bridge and open the native pane;
+explicit external-browser or modified/new-tab actions still open a browser tab.
+Non-web protocol dispatch keeps its existing behavior.
 
-Keep the capability tree intact: an empty `supportedClients` list is rejected
-during registration. Run `node --test tests/browser-capability.test.cjs` and
-`npm run build:browser` after applying the patch to update compressed delivery.
-For the UI check, set `TEST_THREAD_NAME` to an existing chat title and run
-`node tests/browser/native-browser-disabled.cjs` with the browser environment
-variables above. It checks the launcher and an external-link popup through the
-real preload bridge, using a synthetic destination response; it does not test
-third-party website availability.
-
-The preload shim consumes HTTP(S) `open-in-browser` messages after opening the
-client tab. They must not fall through to `invokeMain`: Desktop's independent
-main-process feature flags can still route them into native browser surfaces or
-link-destination prompts. Non-web protocol dispatch keeps its existing behavior.
-The bridge regression includes default markdown intent and explicit native-tab
-requests; the browser check also verifies no native IPC and usable original UI.
+`patches/webview-remote-browser.patch` connects the guest view factory and browser
+host lifecycle. Keep the native capability tree intact. Run
+`node --test tests/browser-capability.test.cjs tests/browser-link-routing.test.cjs`
+and rebuild the browser delivery assets after changing these seams.
 
 ### Tablet touch interaction
 
@@ -337,41 +325,50 @@ Validate with `npm run build:server`,
 `node --test tests/quota-recovery.test.cjs tests/quota-account-hook.test.cjs tests/rate-limit-recovery.test.cjs`
 and `npm run build:browser`.
 
-## Embedded web and HTML viewing
+## Shared browser and HTML viewing
 
-Ordinary HTTP(S) links open a Web-owned browser dialog. Its address field,
-back/forward history and reload control navigate panel-requested pages; explicit
-external-browser and modified/new-tab actions retain browser tab behavior.
-Websites can reject embedding with CSP/X-Frame-Options, and sandboxed sites may
-need the always-visible external-open action for login or other capabilities.
-An iframe load event does not prove that a third-party page rendered. Navigation
-inside cross-origin frames cannot reliably update the panel address/history.
-The panel is not a complete browser replacement and does not embed Codex itself.
+The browser pane runs a real server-side Chromium page, with JPEG frames over a
+receive-only WebSocket and explicit HTTP input commands. It uses the same tab
+for manual input and task browser tools. Local HTML opens as a file URL;
+relative resources, scripts, forms, history and normal website rendering belong
+to Chromium. The old iframe dialog is removed. The isolated static preview
+routes remain for compatibility with older clients.
 
-Local `.html`/`.htm` links without line references open an isolated HTML preview.
-The initial file retains native source viewing and the existing download route.
-A short-lived capability serves only its canonical directory, including relative
-styles, scripts, images and linked HTML pages. Symlinks outside that directory
-are rejected. Script-driven navigation is not reflected in the dialog history;
-normal HTML links are. Network calls, remote resources, forms and nested frames
-are disabled in local previews. Generated attachments without an HTML extension
-keep their existing file behavior.
+`src/server/remote-browser.ts` owns browser lifetimes and per-conversation
+contexts. `src/server/remote-browser-routes.ts` exposes the authenticated app's
+HTTP/WS bridge. Install Chrome or Chromium separately and set
+`CODEX_WEB_BROWSER_EXECUTABLE` if it is not at `/usr/bin/google-chrome`.
+`playwright-core` does not download browsers. Browser state lives in this web
+process; restarting it or expiring an idle conversation clears that context.
+These are server browser profiles, separate from the user's local browser.
+Closing the final tab also releases its context. Creating a task transfers its
+draft browser pages and cookies without reloading. GET popups navigate the same
+tab once; non-GET popups are blocked. JavaScript dialogs are dismissed with an
+explicit error, and download handling is not implemented. Find, zoom, device emulation, style tweaks and print
+controls are disabled or hidden until their corresponding backends exist.
 
-Preview responses and iframes use sandboxing without same-origin permission.
-Cross-site/opaque-origin requests cannot reach application routes or the IPC
-WebSocket, and raw `/@fs/` HTML responses are sandboxed too. Intentional top-level
-GET navigation to the app root or thread pages remains available from external
-links; filesystem and API routes receive no such exception. Vite proxies retain
-the browser Host so same-origin validation works in development.
-This does not provide Desktop's Electron
-browser surface, browser-use automation, a remote-site proxy or embedding-policy
-bypass. `upstream/browser-use` implements a different native browser integration
-and is not required by this path.
+All routes require the existing authenticated reverse proxy; keep the listener
+private. Visited pages cannot call the app control routes. Application origins
+and listener ports are blocked by the browser's private network proxy; a fixed
+browser request marker also fails application HTTP/WS isolation checks.
+The browser shares the host user's filesystem authority and is not a host
+sandbox. Do not expose a raw CDP or JavaScript-evaluation HTTP endpoint.
 
-Checks: `npm run build:server`, `node --test tests/browser-preview.test.cjs
-tests/browser-isolation.test.cjs tests/browser-link-routing.test.cjs
-tests/download.test.cjs`, and the actual-browser check
-`tests/browser/native-browser-disabled.cjs` after `npm run build:browser`.
+`patches/main-remote-browser-tools.patch` handles task-bound browser tool calls
+inside this web process. `patches/webview-remote-browser-tools.patch` advertises
+them for newly created local tasks. The daemon-provided thread ID selects the
+context; tool arguments cannot choose another task. Existing tasks retain their
+old dynamic-tool catalog. No shared daemon settings or MCP configuration change.
+Failed or uncertain input commands are not automatically replayed.
+
+Checks: build the server and browser, run
+`node --test tests/remote-browser*.test.cjs tests/browser/remote-browser.cjs tests/browser-capability.test.cjs tests/browser-isolation.test.cjs tests/browser-link-routing.test.cjs`,
+and run `node tests/browser/native-browser.cjs` against an isolated web instance
+with `TEST_BASE_URL`, an existing `TEST_THREAD_NAME`, and `CHROMIUM_PATH` set.
+The browser test selects that task, but does not send a model turn. Set
+`PLAYWRIGHT_MODULE=playwright-core` to use the installed runtime dependency.
+The browser check must demonstrate rendered frames and native pane input; a
+successful build or iframe load is not sufficient.
 
 ### Browser IPC compression
 

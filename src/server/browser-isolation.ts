@@ -5,6 +5,7 @@ import type { IncomingHttpHeaders } from "node:http";
 export function isIsolatedBrowserRequest(
   headers: IncomingHttpHeaders,
 ): boolean {
+  if (headers["x-codex-remote-browser"] != null) return true;
   const site = headers["sec-fetch-site"];
   if (site === "cross-site" || site === "same-site") return true;
   const origin = headers.origin;
@@ -26,6 +27,7 @@ export function isUserAppNavigation(
   headers: IncomingHttpHeaders,
 ): boolean {
   if (
+    headers["x-codex-remote-browser"] != null ||
     method !== "GET" ||
     headers.origin ||
     headers["sec-fetch-dest"] !== "document" ||

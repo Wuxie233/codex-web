@@ -4,9 +4,9 @@
          Q,
          (e, { get: t }) => {
            let n = FTa[e.name];
-+          // Native browser surfaces are not implemented by the Web bridge.
++          // The web app supplies a real Chromium viewport and native toolbar adapter.
 +          if (e.name === `browser.in-app`)
-+            return { isLoading: !1, isError: !1, isCapable: !1 };
++            return { isLoading: !1, isError: !1, isCapable: !!globalThis.__ELECTRON_SHIM__?.remoteBrowserHost };
            // This fork exposes local Codex work, not ChatGPT cloud features.
            if (n.accessPolicies.includes(`chatgpt`))
              return { isLoading: !1, isError: !1, isCapable: !1 };

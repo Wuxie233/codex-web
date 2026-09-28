@@ -61,7 +61,7 @@ patch --batch --forward --strip 1 --directory scratch/asar < patches/webview-thr
 
 patch --batch --forward --strip 1 --directory scratch/asar < patches/webview-disable-event-telemetry.patch
 
-patch --batch --forward --strip 1 --directory scratch/asar < patches/webview-disable-native-browser.patch
+patch --batch --forward --fuzz=0 --strip 1 --directory scratch/asar < patches/webview-remote-browser-capability.patch
 
 patch --batch --forward --strip 1 --directory scratch/asar < patches/webview-touch-sidebar.patch
 patch --batch --forward --strip 1 --directory scratch/asar < patches/webview-touch-thread-title.patch
@@ -85,3 +85,7 @@ patch --batch --forward --strip 1 --directory scratch/asar < patches/webview-cre
 patch --batch --forward --strip 1 --directory scratch/asar < patches/webview-realtime-browser.patch
 
 patch --batch --forward --strip 1 --directory scratch/asar < patches/webview-touch-diff-preview.patch
+
+patch --batch --forward --fuzz=0 --strip 1 --directory scratch/asar < patches/webview-remote-browser.patch
+patch --batch --forward --fuzz=0 --strip 1 --directory scratch/asar < patches/main-remote-browser-tools.patch
+patch --batch --forward --fuzz=0 --strip 1 --directory scratch/asar < patches/webview-remote-browser-tools.patch

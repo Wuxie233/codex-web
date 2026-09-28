@@ -25,6 +25,7 @@ function fixture() {
     },
   }).outputText;
   const ipc = vm.runInNewContext(js, {
+    remoteBrowser: { handleMessage: () => undefined },
     isRecord: (value) => value !== null && typeof value === "object",
     isLocalFilePickerMessage: () => false,
     isUnhandledAddWorkspaceRootOptionMessage: () => false,

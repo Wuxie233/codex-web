@@ -1,0 +1,108 @@
+--- a/webview/assets/app-initial-236e1501144c.js
++++ b/webview/assets/app-initial-236e1501144c.js
+@@ -296473,7 +296473,7 @@
+         }) {
+           let f = document.createElement(`div`),
+             p = document.createElement(`div`),
+-            m = document.createElement(`webview`);
++            m = window.__ELECTRON_SHIM__?.createRemoteBrowserWebview?.({ conversationId: n, browserTabId: t }) ?? document.createElement(`webview`);
+           ((this.browserHostService = e),
+             (this.browserTabId = t),
+             (this.conversationId = n),
+@@ -297666,7 +297666,7 @@
+             );
+           a != null && this.disposeHost(e, t, `web`);
+           let l = new HWi({
+-            browserHostService: iX?.browserHost,
++            browserHostService: window.__ELECTRON_SHIM__?.remoteBrowserHost ?? iX?.browserHost,
+             browserTabId: t,
+             conversationId: e,
+             elementKey: i,
+@@ -297798,7 +297798,7 @@
+           this.hosts.clear();
+         }
+         registerHost(e, t) {
+-          let n = iX?.browserHost;
++          let n = window.__ELECTRON_SHIM__?.remoteBrowserHost ?? iX?.browserHost;
+           if (n == null) {
+             this.disposeCurrentHost(e);
+             return;
+--- a/webview/assets/tab-content-52c3c5c7855d.js
++++ b/webview/assets/tab-content-52c3c5c7855d.js
+@@ -6161,7 +6161,7 @@
+     : (Te = t[29]);
+   let W;
+   t[30] !== h || t[31] !== o
+-    ? ((W = (0, Z.jsx)(ve.Item, { disabled: o, onSelect: h, children: Te })),
++    ? ((W = (0, Z.jsx)(ve.Item, { disabled: o || !!window.__ELECTRON_SHIM__?.remoteBrowserHost, onSelect: h, children: Te })),
+       (t[30] = h),
+       (t[31] = o),
+       (t[32] = W))
+@@ -6215,7 +6215,7 @@
+         type: `button`,
+         "aria-label": de,
+         title: de,
+-        disabled: o,
++        disabled: o || !!window.__ELECTRON_SHIM__?.remoteBrowserHost,
+         className: `flex h-6 w-6 cursor-interaction items-center justify-center text-codex-description outline-none hover:bg-primary-ghost-hover focus:bg-primary-ghost-hover focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset disabled:cursor-not-allowed disabled:opacity-40`,
+         onClick: ke,
+         children: Ae,
+@@ -6253,7 +6253,7 @@
+         type: `button`,
+         "aria-label": pe,
+         title: pe,
+-        disabled: o,
++        disabled: o || !!window.__ELECTRON_SHIM__?.remoteBrowserHost,
+         className: `flex h-6 w-6 cursor-interaction items-center justify-center text-codex-description outline-none hover:bg-primary-ghost-hover focus:bg-primary-ghost-hover focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset disabled:cursor-not-allowed disabled:opacity-40`,
+         onClick: Pe,
+         children: K,
+@@ -6274,7 +6274,7 @@
+       (t[57] = Fe),
+       (t[58] = Ie))
+     : (Ie = t[58]);
+-  let q = o || r === 100,
++  let q = o || r === 100 || !!window.__ELECTRON_SHIM__?.remoteBrowserHost,
+     Le;
+   t[59] === _
+     ? (Le = t[60])
+@@ -11243,7 +11243,7 @@
+           ...t.filter((e) => !ie(e, n)),
+           ...e.map((e, t) => ur(e, t + 1, n)),
+         ]));
+-    }, [n, _t, h, I, St]),
++    }, [n, _t, h, I, window.__ELECTRON_SHIM__?.remoteBrowserHost ? St?.comments : St]),
+     (0, Q.useEffect)(() => {
+       let e = St == null ? [] : Mr(St.comments, h, _t);
+       if (Ee.current) {
+@@ -11796,11 +11796,11 @@
+                           triggerRef: me,
+                           browserProfileImportService: ln,
+                           currentZoomPercent: si,
+-                          isDeviceToolbarEnabled: l,
++                          isDeviceToolbarEnabled: l && !window.__ELECTRON_SHIM__?.remoteBrowserHost,
+                           isDeviceToolbarVisible: Br.isEnabled,
+                           isFloatingComposerMenuItemVisible: f && Tt,
+                           isFloatingComposerVisible: p,
+-                          isPrintMenuItemVisible: !0,
++                          isPrintMenuItemVisible: !window.__ELECTRON_SHIM__?.remoteBrowserHost,
+                           isScreenshotCaptureEnabled: d,
+                           onCaptureScreenshot: () => {
+                             pi({ type: `capture-screenshot` });
+@@ -11897,7 +11897,7 @@
+                 },
+                 t,
+               ),
+-              s && Tt
++              s && Tt && !window.__ELECTRON_SHIM__?.remoteBrowserHost
+                 ? (0, $.jsx)(wf, {
+                     browserTabId: n,
+                     conversationId: t,
+@@ -12278,7 +12278,7 @@
+           hostDisplayName: i,
+           isFloatingComposerToggleVisible: x,
+           isFloatingComposerVisible: S,
+-          isTweaksEnabled: g,
++          isTweaksEnabled: g && !window.__ELECTRON_SHIM__?.remoteBrowserHost,
+           isVisible: y,
+           panelTarget: s,
+           onToggleFloatingComposer: C,

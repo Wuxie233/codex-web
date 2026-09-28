@@ -25,7 +25,7 @@ const plain = (value) => JSON.parse(JSON.stringify(value));
 const ready = { isLoading: false, isError: false, isCapable: true };
 const unavailable = { ...ready, isCapable: false };
 
-function fixture(state = "enabled") {
+function fixture(state = "enabled", adapter = true) {
   const calls = [];
   const capability = {
     accessPolicies: ["workspace-in-app-browser"],
@@ -34,6 +34,7 @@ function fixture(state = "enabled") {
     configFeatures: [{ key: "in_app_browser", host: "default" }],
   };
   const evaluate = vm.runInNewContext(`(e, t) => {${body}\n}`, {
+    __ELECTRON_SHIM__: adapter ? { remoteBrowserHost: {} } : {},
     FTa: {
       "browser.in-app": capability,
       local: { ...capability, accessPolicies: [], configFeatures: [] },
@@ -59,14 +60,14 @@ function fixture(state = "enabled") {
   return { check: (name) => plain(evaluate({ name }, get)), calls };
 }
 
-test("native browser is unavailable before daemon policy/config reads", () => {
+test("real browser adapter enables native UI without daemon policy/config reads", () => {
   for (const state of ["enabled", "loading", "error"]) {
     const f = fixture(state);
-    assert.deepEqual(f.check("browser.in-app"), unavailable);
+    assert.deepEqual(f.check("browser.in-app"), ready);
     assert.deepEqual(
       f.calls,
       [],
-      "unsupported browser must not wait on daemon config",
+      "local browser adapter must not wait on daemon config",
     );
     assert.deepEqual(
       f.check("local"),
@@ -76,7 +77,7 @@ test("native browser is unavailable before daemon policy/config reads", () => {
   }
 });
 
-test("saved native browser tabs are unavailable once capability resolves", () => {
+test("saved native browser tabs use the real web adapter", () => {
   const f = fixture();
   const c = vm.runInNewContext(
     section("function BFs(e)", "\nvar HFs,") +
@@ -84,11 +85,11 @@ test("saved native browser tabs are unavailable once capability resolves", () =>
     { yX: "capability" },
   );
   const store = { get: (_, { name }) => f.check(name) };
-  assert.equal(c.available(store), false);
-  assert.equal(c.inApp(store), false);
+  assert.equal(c.available(store), true);
+  assert.equal(c.inApp(store), true);
 });
 
-test("web links fall back externally even with a saved in-app preference", () => {
+test("web links use native pane unless explicitly opened externally", () => {
   const route = vm.runInNewContext(
     section("function ETt({", "\nfunction OTt(") + "; DTt",
     { gg: "external-browser", S_: () => false, kTt: () => true },
@@ -102,7 +103,11 @@ test("web links fall back externally even with a saved in-app preference", () =>
         openLinkInTargetPreference: "in-app-browser",
         openTarget,
       }),
-      "external-browser",
+      openTarget === "external-browser" ? "external-browser" : "in-app-browser",
     );
   }
+});
+
+test("missing adapter preserves the external browser fallback", () => {
+  assert.deepEqual(fixture("enabled", false).check("browser.in-app"), unavailable);
 });

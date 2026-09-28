@@ -22,6 +22,8 @@ import { rebaseRequestDeadlines } from "./request-deadline";
 import { isIsolatedBrowserRequest, isUserAppNavigation } from "./browser-isolation";
 import { registerBrowserPreviewRoutes } from "./browser-preview";
 import { registerDownloadRoute } from "./download";
+import { RemoteBrowser } from "./remote-browser";
+import { registerRemoteBrowserRoutes } from "./remote-browser-routes";
 import { QuotaRecovery } from "./quota-recovery";
 import { ipcMain } from "./electron/index";
 import { RealtimeWindows, type RealtimeWindow } from "./realtime-windows";
@@ -438,6 +440,21 @@ async function startIpcBridgeServer(options: ServerOptions): Promise<void> {
   });
   registerBrowserPreviewRoutes(app);
   registerDownloadRoute(app);
+  const remoteBrowser = new RemoteBrowser();
+  Object.assign(globalThis, { __codexRemoteBrowser: remoteBrowser });
+  const browserAppHost = options.host.includes(":")
+    ? `[${options.host}]`
+    : options.host;
+  remoteBrowser.setAppOrigin(`http://${browserAppHost}:${options.port}`);
+  remoteBrowser.setAppOrigin(`http://localhost:${options.port}`);
+  const upgradeRemoteBrowser = registerRemoteBrowserRoutes(app, remoteBrowser);
+  // Only this web process owns these Chromium children. The shared app-server
+  // remains untouched when the web service exits or reloads.
+  for (const signal of ["SIGTERM", "SIGINT"] as const) {
+    process.once(signal, () => {
+      void remoteBrowser.dispose().finally(() => process.exit(0));
+    });
+  }
   const websocketServer = new WebSocketServer({
     noServer: true,
     // Native initialization includes large RPC snapshots; keep them off the wire
@@ -524,6 +541,7 @@ async function startIpcBridgeServer(options: ServerOptions): Promise<void> {
   });
 
   app.server.on("upgrade", (request, socket, head) => {
+    if (upgradeRemoteBrowser(request, socket, head)) return;
     if (isIsolatedBrowserRequest(request.headers)) {
       socket.destroy();
       return;

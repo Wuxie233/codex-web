@@ -1,0 +1,52 @@
+--- a/webview/assets/app-initial-236e1501144c.js
++++ b/webview/assets/app-initial-236e1501144c.js
+@@ -338760,6 +338760,41 @@
+         },
+       ]));
+   });
++// Codex Web remote browser tools share the user's task browser session.
++function codexWebRemoteBrowserToolSpecs() {
++  const browserTabId = { type: `string`, description: `A tab ID returned by browser_tabs. Omit to use this task's first tab.` };
++  const object = (properties, required = []) => ({ type: `object`, properties, required, additionalProperties: false });
++  return [
++    {
++      name: `browser_tabs`,
++      description: `List the real browser tabs shared with the user in this task. Start here and reuse an existing tab. Tabs and login state are isolated by task. Tool arguments cannot select another task.`,
++      inputSchema: object({}),
++    },
++    {
++      name: `browser_open`,
++      description: `Open the user's shared browser panel and optionally navigate. Reuses this task's first tab by default. The user sees and controls the same real page; all browser actions affect that page.`,
++      inputSchema: object({ browserTabId, url: { type: `string`, description: `An HTTP(S) URL to open. Omit to show the existing page.` } }),
++    },
++    {
++      name: `browser_action`,
++      description: `Read or control the shared browser page. Use screenshot to see the current page as an image, inspect at x/y for element context, mouse/key/text/scroll for input, or navigation actions. Coordinates use the page viewport. Never retry a failed, cancelled, or timed out write automatically: it may have executed.`,
++      inputSchema: object({
++        browserTabId,
++        action: { type: `string`, enum: [`navigate`, `back`, `forward`, `reload`, `stop`, `state`, `resize`, `mouse`, `scroll`, `key`, `text`, `inspect`, `screenshot`, `close`] },
++        url: { type: `string` }, width: { type: `number` }, height: { type: `number` },
++        eventType: { type: `string`, enum: [`move`, `down`, `up`, `click`, `press`] },
++        x: { type: `number` }, y: { type: `number` }, button: { type: `string`, enum: [`left`, `middle`, `right`] },
++        deltaX: { type: `number` }, deltaY: { type: `number` }, key: { type: `string` }, text: { type: `string` },
++      }, [`action`]),
++    },
++    {
++      name: `browser_evaluate`,
++      description: `Evaluate JavaScript in this task's shared browser page and return its serializable result. Use for DOM inspection or page interaction when needed. This operates on the user's actual page and can have side effects. Do not automatically retry an unknown outcome.`,
++      inputSchema: object({ browserTabId, expression: { type: `string`, description: `A JavaScript expression evaluated in the page. Promises are awaited.` } }, [`expression`]),
++    },
++  ];
++}
++// End Codex Web browser tool catalog.
+ async function sga({
+   appServerVersion: e,
+   availableHandoffHosts: t,
+@@ -338837,6 +338872,7 @@
+       ),
+     await uga(te, x));
+   let ne = [
++    ...(p === `local` ? codexWebRemoteBrowserToolSpecs() : []),
+     ...(O ? [lCr, uCr, dCr] : []),
+     ...(L ? [LUn()] : []),
+     Jvi(_),

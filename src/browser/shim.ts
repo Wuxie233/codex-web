@@ -2,8 +2,10 @@ import { installConnectionHealth } from "./connection-health";
 import {
   openBrowserUrl,
   openLocalHtml,
+  installBrowserOpener,
   type HtmlPreviewRequest,
 } from "./browser-panel";
+import { createRemoteBrowserBridge } from "./remote-browser";
 import "./mobile-sidebar-actions";
 import {
   realtimeToken,
@@ -128,6 +130,12 @@ type StatsigGateEvaluation = {
 };
 
 type ElectronShimState = {
+  createRemoteBrowserWebview?: ReturnType<
+    typeof createRemoteBrowserBridge
+  >["createWebview"];
+  remoteBrowserHost?: ReturnType<
+    typeof createRemoteBrowserBridge
+  >["browserHost"];
   openLocalHtml?: (request: HtmlPreviewRequest) => boolean;
   preferLightweightVoiceRenderer?: boolean;
   downloadLocalFile?: (request: LocalFileOpenRequest) => boolean;
@@ -455,6 +463,18 @@ const themeMediaQuery = matchMedia("(prefers-color-scheme: dark)");
 const mobileMediaQuery = matchMedia("(max-width: 768px)");
 const initialSidebarState = !mobileMediaQuery.matches;
 const electronShim = (window.__ELECTRON_SHIM__ ??= {});
+const remoteBrowser = createRemoteBrowserBridge({
+  emitMessage: (message) =>
+    emitRendererEvent("codex_desktop:message-for-view", [message]),
+});
+installBrowserOpener((message) =>
+  emitRendererEvent("codex_desktop:message-for-view", [message]),
+);
+electronShim.createRemoteBrowserWebview = remoteBrowser.createWebview;
+electronShim.remoteBrowserHost = remoteBrowser.browserHost;
+window.addEventListener("pagehide", (event) => {
+  if (!event.persisted) remoteBrowser.dispose();
+});
 electronShim.preferLightweightVoiceRenderer = true;
 electronShim.downloadLocalFile = downloadLocalFile;
 electronShim.openLocalHtml = openLocalHtml;
@@ -534,6 +554,8 @@ electronShim.onMemoryNavigationChanged = (navigation) => {
 export const ipcRenderer = {
   invoke(channel: string, ...args: unknown[]): Promise<unknown> {
     if (channel === "codex_desktop:message-from-view" && args.length === 1) {
+      const handled = remoteBrowser.handleMessage(args[0]);
+      if (handled) return handled;
       if (isOpenInBrowserMessage(args[0])) {
         const message = args[0];
         const external =
@@ -544,8 +566,7 @@ export const ipcRenderer = {
           message.disposition === "new-background-tab";
         if (external || !openBrowserUrl(message.url))
           window.open(message.url, "_blank", "noopener,noreferrer");
-        // The client owns web links; forwarding them also invokes Desktop's
-        // unsupported native browser routing, even when its UI is disabled.
+        // The renderer owns web links; do not also dispatch to Electron's host.
         if (/^https?:\/\//i.test(args[0].url)) return Promise.resolve();
       }
 
@@ -610,6 +631,15 @@ export const ipcRenderer = {
     return this.removeListener(channel, listener);
   },
   send(channel: string, ...args: unknown[]): void {
+    if (channel === "codex_desktop:message-from-view" && args.length === 1) {
+      const handled = remoteBrowser.handleMessage(args[0]);
+      if (handled) {
+        void handled.catch((error) =>
+          console.error("Browser command failed", error),
+        );
+        return;
+      }
+    }
     enqueueMessage({
       type: "ipc-renderer-send",
       channel,

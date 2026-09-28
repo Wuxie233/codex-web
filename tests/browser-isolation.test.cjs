@@ -6,6 +6,7 @@ const {
 } = require("../src/server/browser-isolation.js");
 test("opaque and cross-site previews cannot access application HTTP or WebSocket routes", () => {
   for (const headers of [
+    { "x-codex-remote-browser": "1", "sec-fetch-site": "none" },
     { origin: "null" },
     { "sec-fetch-site": "cross-site" },
     { "sec-fetch-site": "same-site" },
@@ -40,6 +41,7 @@ test("external app entry only permits intentional top-level known app routes", (
   };
   for (const url of ["/", "/?prompt=x", "/thread/abc-123"])
     assert.equal(isUserAppNavigation("GET", url, headers), true);
+  assert.equal(isUserAppNavigation("GET", "/", { ...headers, "x-codex-remote-browser": "1" }), false);
   for (const url of [
     "/@fs/evil.html",
     "/__backend/download",

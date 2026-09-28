@@ -29,6 +29,11 @@ export default defineConfig({
     host: "127.0.0.1",
     port: 4173,
     proxy: {
+      "/__backend/remote-browser": {
+        target: `http://127.0.0.1:8214`,
+        changeOrigin: false,
+        ws: true,
+      },
       "/__backend/ipc": {
         target: `ws://127.0.0.1:8214`,
         changeOrigin: false,
