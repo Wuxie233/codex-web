@@ -231,7 +231,10 @@ export class QuotaRecovery {
   registerHost(host: string, adapter: Adapter) {
     this.unregisterHost(host);
     this.hosts.set(host, adapter);
-    if (this.autoResumeOn429) this.startRateScan(host);
+    if (this.autoResumeOn429) {
+      this.scheduleRateEntries();
+      this.startRateScan(host);
+    }
   }
   unregisterHost(host: string) {
     this.hosts.delete(host);
@@ -286,7 +289,10 @@ export class QuotaRecovery {
       this.rateGeneration++;
       this.cancelRateTimers();
       this.cancelRateScans();
-      if (value) for (const host of this.hosts.keys()) this.startRateScan(host);
+      if (value) {
+        this.scheduleRateEntries();
+        for (const host of this.hosts.keys()) this.startRateScan(host);
+      }
     }
     return this.visibleSnapshot();
   }
@@ -413,7 +419,12 @@ export class QuotaRecovery {
               ? null
               : (page.nextCursor ?? null);
           if (
-            !(await this.discoverCandidates(host, adapter, candidates, allowed))
+            !(await this.discoverCandidates(
+              host,
+              adapter,
+              candidates,
+              () => allowed() && !this.busy,
+            ))
           )
             complete = false;
           if (allowed()) await this.resolveEntries();
@@ -465,7 +476,7 @@ export class QuotaRecovery {
         () => {
           this.rateTimers.delete(entry.id);
           void (async () => {
-            await this.waitUntilIdle();
+            await this.waitUntilIdle(false);
             if (!this.rateAllowed(entry, generation, quotaRevision)) return;
             await this.resume([entry.id], undefined, {
               generation,
@@ -583,11 +594,11 @@ export class QuotaRecovery {
       this.quotaRevision === attempt.quotaRevision
     );
   }
-  private async waitUntilIdle() {
-    while (this.busy || this.scanning) {
+  private async waitUntilIdle(includeScanning = true) {
+    while (this.busy || (includeScanning && this.scanning)) {
       if (this.busy)
         await new Promise<void>((resolve) => this.idleWaiters.add(resolve));
-      if (this.scanning) await this.scanning;
+      if (includeScanning && this.scanning) await this.scanning;
     }
   }
   private async drainAutoQueue() {
@@ -595,7 +606,7 @@ export class QuotaRecovery {
       const [host, attempt] = this.autoQueue.entries().next().value!;
       this.autoQueue.delete(host);
       try {
-        await this.waitUntilIdle();
+        await this.waitUntilIdle(false);
         if (!this.autoAllowed(attempt)) continue;
         // Known failures can resume immediately; unopened history follows one page at a time.
         await this.resumeAutomatic(attempt);
@@ -612,8 +623,11 @@ export class QuotaRecovery {
               adapter.listThreads(this.historyParams(cursor)),
             );
             next = page.nextCursor ?? null;
-            await this.discoverCandidates(host, adapter, page.data, () =>
-              this.autoAllowed(attempt),
+            await this.discoverCandidates(
+              host,
+              adapter,
+              page.data,
+              () => this.autoAllowed(attempt) && !this.busy,
             );
             await this.resolveEntries();
           })().finally(() => {
@@ -631,7 +645,7 @@ export class QuotaRecovery {
     }
   }
   private async resumeAutomatic(attempt: AutoAttempt) {
-    await this.waitUntilIdle();
+    await this.waitUntilIdle(false);
     if (!this.autoAllowed(attempt)) return;
     const ids = [...this.entries.values()]
       .filter(
@@ -919,16 +933,37 @@ export class QuotaRecovery {
       thread.source === "subagent"
     );
   }
-  private async resolveEntries() {
+  private async resolveEntries(
+    ids?: string[],
+    proceed: () => boolean = () => !this.busy,
+  ) {
     const aliases = new Map<string, string>();
-    for (const entry of [...this.entries.values()]) {
+    const entries = ids
+      ? ids.map((id) => this.entries.get(id)).filter((e): e is Entry => !!e)
+      : [...this.entries.values()];
+    for (const entry of entries) {
+      if (!proceed()) break;
       if (entry.resolved) continue;
       const adapter = this.hosts.get(entry.hostId);
       if (!adapter) continue;
-      let thread = await bounded(adapter.readThread(entry.threadId)).catch(
-        () => null,
-      );
-      if (!thread) continue;
+      const status = entry.status;
+      const revisions = new Map<string, number>();
+      const current = () =>
+        proceed() &&
+        this.hosts.get(entry.hostId) === adapter &&
+        this.entries.get(entry.id) === entry &&
+        !entry.resolved &&
+        entry.status === status &&
+        [...revisions].every(
+          ([key, revision]) => revision === (this.revisions.get(key) ?? 0),
+        );
+      const read = (id: string) => {
+        const key = this.key(entry.hostId, id);
+        revisions.set(key, this.revisions.get(key) ?? 0);
+        return bounded(adapter.readThread(id)).catch(() => null);
+      };
+      let thread = await read(entry.threadId);
+      if (!thread || !current()) continue;
       const seen = new Set<string>();
       while (this.isChild(thread)) {
         const parent = this.parent(thread);
@@ -938,13 +973,11 @@ export class QuotaRecovery {
           break;
         }
         seen.add(thread.id);
-        const next = await bounded(adapter.readThread(parent)).catch(
-          () => null,
-        );
-        if (!next) break;
+        const next = await read(parent);
+        if (!next || !current()) break;
         thread = next;
       }
-      if (this.isChild(thread)) continue;
+      if (!current() || this.isChild(thread)) continue;
       entry.title =
         thread.name || thread.preview?.slice(0, 100) || "未命名任务";
       if (thread.id === entry.threadId) {
@@ -1040,12 +1073,24 @@ export class QuotaRecovery {
     await this.resolveEntries();
     // Update titles and reconcile uncertain sends by their unique client message id.
     for (const entry of this.entries.values()) {
+      if (this.busy) break;
       if (!["pending", "failed", "unknown"].includes(entry.status)) continue;
       const adapter = this.hosts.get(entry.hostId);
       if (!adapter) continue;
+      const key = this.key(entry.hostId, entry.threadId);
+      const revision = this.revisions.get(key) ?? 0;
+      const status = entry.status;
       const thread = await bounded(adapter.readThread(entry.threadId)).catch(
         () => null,
       );
+      if (
+        this.busy ||
+        this.hosts.get(entry.hostId) !== adapter ||
+        this.entries.get(entry.id) !== entry ||
+        entry.status !== status ||
+        revision !== (this.revisions.get(key) ?? 0)
+      )
+        continue;
       if (thread)
         entry.title =
           thread.name || thread.preview?.slice(0, 100) || entry.title;
@@ -1104,6 +1149,7 @@ export class QuotaRecovery {
             const thread = await bounded(adapter.readThread(item.id), 5000);
             if (
               !thread ||
+              this.hosts.get(host) !== adapter ||
               !proceed() ||
               revision !== (this.revisions.get(key) ?? 0)
             ) {
@@ -1182,8 +1228,8 @@ export class QuotaRecovery {
     this.busy = true;
     const quotaRevision = this.quotaRevision;
     try {
-      if (this.scanning) await this.scanning;
-      const aliases = await this.resolveEntries();
+      // History discovery must never hold up an explicitly selected continuation.
+      const aliases = await this.resolveEntries(ids, () => true);
       for (const id of new Set<string>(
         ids.map((id) => aliases.get(id) ?? id),
       )) {

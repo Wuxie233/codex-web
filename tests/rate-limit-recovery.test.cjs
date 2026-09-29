@@ -1025,3 +1025,195 @@ test("mixed missing timestamps do not stop incremental discovery before later pa
     f.recovery.snapshot().entries.some((entry) => entry.threadId === "later"),
   );
 });
+
+test("slow history scans do not delay known automatic or manual continuations", async (t) => {
+  for (const mode of ["list", "read"])
+    for (const automatic of [true, false])
+      await t.test(
+        `${mode}, ${automatic ? "429" : "manual quota"}`,
+        async (t) => {
+          const real = global.setTimeout;
+          t.mock.method(global, "setTimeout", (callback, delay, ...args) =>
+            real(callback, delay === 1500 ? 0 : delay, ...args),
+          );
+          const f = fixture(t);
+          const entry = f.fail("ready", "failed", automatic ? rate : quota);
+          await f.recovery.list();
+          f.reload();
+          f.threads.set("history", {
+            id: "history",
+            status: { type: "idle" },
+            turns: [{ id: "done", status: "completed" }],
+          });
+          let release,
+            held = false;
+          const gate = new Promise((resolve) => {
+            release = resolve;
+          });
+          const list = f.adapter.listThreads;
+          const read = f.adapter.readThread;
+          f.adapter.listThreads = async (params) => {
+            if (mode === "list" && !params.archived) {
+              held = true;
+              await gate;
+            }
+            return list(params);
+          };
+          f.adapter.readThread = async (id) => {
+            if (mode === "read" && id === "history") {
+              held = true;
+              await gate;
+            }
+            return read(id);
+          };
+          let scan, resume;
+          try {
+            if (automatic) f.recovery.setAutoResume429(true);
+            else scan = f.recovery.list();
+            await flush();
+            assert.equal(held, true);
+            if (automatic) await f.advance(30000);
+            else {
+              resume = f.recovery.resume([entry.id]);
+              await flush();
+            }
+            assert.deepEqual(
+              f.sent.map((x) => x.threadId),
+              ["ready"],
+            );
+          } finally {
+            release();
+            await flush();
+            await scan;
+            await resume;
+          }
+          assert.equal(f.sent.length, 1);
+        },
+      );
+});
+
+test("unrelated unresolved records do not block a selected continuation", async (t) => {
+  const real = global.setTimeout;
+  t.mock.method(global, "setTimeout", (callback, delay, ...args) =>
+    real(callback, delay === 1500 ? 0 : delay, ...args),
+  );
+  const f = fixture(t);
+  f.fail("unavailable", "old", quota);
+  const entry = f.fail("ready", "failed", quota);
+  let release;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  const read = f.adapter.readThread;
+  f.adapter.readThread = async (id) => {
+    if (id === "unavailable") await gate;
+    return read(id);
+  };
+  const resume = f.recovery.resume([entry.id]);
+  try {
+    await flush();
+    assert.deepEqual(
+      f.sent.map((x) => x.threadId),
+      ["ready"],
+    );
+  } finally {
+    release();
+    await resume;
+  }
+});
+
+test("enabling or reconnecting schedules known 429 records before history completes", async (t) => {
+  for (const reconnect of [false, true])
+    await t.test(reconnect ? "reconnect" : "enable", async (t) => {
+      const f = fixture(t);
+      f.fail();
+      await f.recovery.list();
+      if (reconnect) {
+        f.recovery.setAutoResume429(true);
+        await flush();
+        f.recovery.unregisterHost("local");
+      }
+      let release;
+      const gate = new Promise((resolve) => {
+        release = resolve;
+      });
+      const list = f.adapter.listThreads;
+      f.adapter.listThreads = async (params) => {
+        if (!params.archived) await gate;
+        return list(params);
+      };
+      try {
+        if (reconnect) f.recovery.registerHost("local", f.adapter);
+        else f.recovery.setAutoResume429(true);
+        await flush();
+        await f.advance(30000);
+        assert.equal(f.sent.length, 1);
+        assert.equal(f.recovery.snapshot().entries[0].autoRetryCount, 1);
+      } finally {
+        release();
+        await flush();
+      }
+      assert.equal(f.sent.length, 1);
+    });
+});
+
+test("late child resolution cannot revive an old root failure or reset a dispatched budget", async (t) => {
+  const f = fixture(t);
+  f.fail("root", "old-human");
+  f.threads.get("root").turns.at(-1).items = [
+    { type: "userMessage", id: "old-human-message" },
+  ];
+  f.fail("child", "child-failure");
+  f.threads.get("child").parentThreadId = "root";
+  const staleRoot = structuredClone(f.threads.get("root"));
+  const read = f.adapter.readThread;
+  let release;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  let rootReads = 0;
+  f.adapter.readThread = async (id) => {
+    // Initial root resolution completes; the child's parent read stays in flight.
+    if (id === "root" && ++rootReads === 2) return gate;
+    return read(id);
+  };
+  try {
+    f.recovery.setAutoResume429(true);
+    await flush();
+    assert.equal(rootReads, 2);
+    const manual = {
+      id: "new-human",
+      status: "inProgress",
+      items: [{ type: "userMessage", id: "new-human-message" }],
+    };
+    f.threads.get("root").turns.push(manual);
+    f.recovery.observe("local", {
+      method: "turn/started",
+      params: { threadId: "root", turn: manual },
+    });
+    f.fail("root", "new-human");
+    await f.advance(30000);
+    assert.deepEqual(
+      f.sent.map((entry) => entry.threadId),
+      ["root"],
+    );
+  } finally {
+    release(staleRoot);
+    await flush();
+  }
+  const entries = f.recovery.snapshot().entries;
+  const dispatched = entries.find(
+    (entry) => entry.threadId === "root" && entry.turnId === "new-human",
+  );
+  assert.equal(dispatched.status, "resumed");
+  assert.equal(dispatched.autoRetryCount, 1);
+  const settings = JSON.parse(
+    fs.readFileSync(f.file + ".settings.json", "utf8"),
+  );
+  assert.equal(
+    settings.rateLimitChains[JSON.stringify(["local", "root"])].count,
+    1,
+  );
+  await f.advance(30000);
+  assert.equal(f.sent.length, 1);
+});

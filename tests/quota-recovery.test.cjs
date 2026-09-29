@@ -192,6 +192,38 @@ test("crash during persisted sending is loaded as unknown", (t) => {
     "unknown",
   );
 });
+test("refresh reveals an unresolved unknown send without replaying it", async (t) => {
+  const f = fixture(t),
+    id = f.fail();
+  const readThread = f.adapter.readThread;
+  let firstRead = true;
+  f.adapter.readThread = async (threadId) => {
+    if (firstRead) {
+      firstRead = false;
+      return null;
+    }
+    return readThread(threadId);
+  };
+  f.adapter.startTurn = async (params, beforeSend) => {
+    beforeSend();
+    f.sent.push(params);
+    throw Error("connection lost after write");
+  };
+  await f.recovery.resume([id]);
+  assert.equal(f.recovery.snapshot().entries[0].status, "unknown");
+  assert.equal(f.recovery.snapshot().entries[0].resolved, undefined);
+
+  const reloaded = new QuotaRecovery(f.file);
+  t.after(() => reloaded.dispose());
+  reloaded.registerHost("local", f.adapter);
+  const refreshed = await reloaded.list();
+  assert.equal(refreshed.entries.length, 1);
+  assert.equal(refreshed.entries[0].id, id);
+  assert.equal(refreshed.entries[0].status, "unknown");
+  assert.equal(refreshed.entries[0].resolved, true);
+  await reloaded.resume([id]);
+  assert.equal(f.sent.length, 1);
+});
 test("new quota failure pauses remaining selected tasks", async (t) => {
   const f = fixture(t),
     a = f.fail("a", "fa"),
