@@ -83,7 +83,7 @@ function openBrowserFilePicker({
   });
 }
 
-async function uploadFiles(files: File[]) {
+export async function uploadFiles(files: File[]) {
   if (files.length === 0) {
     return [];
   }

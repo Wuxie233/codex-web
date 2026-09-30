@@ -398,3 +398,13 @@ outer bounds: there is no native window frame. Native avatar layout reads and
 updates this rectangle when voice is opened again after a previous presentation.
 `tests/realtime-voice.test.cjs` executes the native layout setter against the real
 adapter to catch missing geometry methods.
+
+### Browser file paste
+
+`webview-paste-files.patch` routes ordinary pasted/dropped browser files through
+`electronBridge.uploadBrowserFiles` and the same multipart endpoint as the file
+picker. Browser `getPathForFile` returns null; File objects have no server path.
+The composer retains image/text handling, accepts zero-byte ordinary files,
+rejects directories, and guards asynchronous completion by attachment generation
+and cancellation IDs. Remote transfers reuse the native host forwarding flow.
+Run `node --test tests/paste-files.test.cjs` after upstream composer changes.

@@ -21,6 +21,7 @@ import {
   mapMemoryPathToBrowserPath,
 } from "./routes";
 import {
+  uploadFiles,
   handleLocalFilePickerMessage,
   isLocalFilePickerMessage,
 } from "./files";
@@ -751,6 +752,7 @@ export const contextBridge = {
       // capability lets Desktop render its existing accessible browser menus.
       const browserApi = { ..._api };
       delete browserApi.showContextMenu;
+      browserApi.uploadBrowserFiles = uploadFiles;
       Reflect.set(window, _key, browserApi);
       return;
     }
@@ -760,7 +762,8 @@ export const contextBridge = {
 
 export const webUtils = {
   getPathForFile(_file: File): string | null {
-    return unimplemented("webUtils.getPathForFile");
+    // Browser File objects do not carry a server-side filesystem path.
+    return null;
   },
 };
 

@@ -1,0 +1,54 @@
+--- a/webview/assets/app-primary-6b28e06666ff.js
++++ b/webview/assets/app-primary-6b28e06666ff.js
+@@ -83761,7 +83761,7 @@
+       t && r.push(i);
+       continue;
+     }
+-    if (i.size !== 0) {
++    if (i.size !== 0 || (window.electronBridge?.uploadBrowserFiles && !ig(i))) {
+       if (ig(i)) {
+         n.push(i);
+         continue;
+@@ -372491,10 +372491,42 @@
+         for (let e of t) n.delete(e);
+       }
+     };
++  const uploadBrowserAttachments = async (files, onAdded) => {
++    const generation = t.current;
++    const pending = files.map((file) => ({ id: qC(), label: file.name }));
++    p((items) => [...items, ...pending]);
++    try {
++      const uploaded = await window.electronBridge.uploadBrowserFiles(files);
++      if (t.current !== generation) return;
++      const active = uploaded.filter((file, index) => !n.has(pending[index].id));
++      const ids = new Set(pending.map((item) => item.id));
++      p((items) => items.filter((item) => !ids.has(item.id)));
++      if (active.length > 0) await C(active, onAdded);
++    } catch {
++      if (t.current === generation)
++        e.get(Ex).danger(c.formatMessage({
++          id: `composer.fileAttachment.browserFileCopyError`,
++          defaultMessage: `Unable to attach file`,
++          description: `Toast shown when copying a browser-selected file to a local attachment path fails`,
++        }));
++    } finally {
++      const ids = new Set(pending.map((item) => item.id));
++      p((items) => items.filter((item) => !ids.has(item.id)));
++      for (const id of ids) n.delete(id);
++    }
++  };
+   return {
+     addFileDescriptorsAsMentions: x,
+     addFileMentionsFromFiles: (t, n, i, a) => {
+       if (t.length === 0) return;
++      if (window.electronBridge?.uploadBrowserFiles) {
++        if (QYt(n).some((item) => item.isDirectory)) {
++          e.get(Ex).danger(`Please compress folders into an archive before uploading.`);
++          return;
++        }
++        void uploadBrowserAttachments(t, i);
++        return;
++      }
+       let s = window.electronBridge?.getPathForFile,
+         l = ZYt(t, s, n, a),
+         u = r ? t.filter((e) => e.size > 0 && SH(e, s) == null) : [];

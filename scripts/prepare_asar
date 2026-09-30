@@ -91,3 +91,5 @@ patch --batch --forward --fuzz=0 --strip 1 --directory scratch/asar < patches/ma
 patch --batch --forward --fuzz=0 --strip 1 --directory scratch/asar < patches/webview-remote-browser-tools.patch
 
 patch --batch --forward --fuzz=0 --strip 1 --directory scratch/asar < patches/webview-promax-plan.patch
+
+patch --batch --forward --fuzz=0 --strip 1 --directory scratch/asar < patches/webview-paste-files.patch
