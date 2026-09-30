@@ -97,3 +97,13 @@ as loading taking forever (more than 1m). look out for that case too.
 
 if there are errors, bring them to the users attention and we will decide how to
 proceed.
+
+## Account plan compatibility
+
+The local access classifier must recognize the `promax` personal plan returned
+by newer app servers. `patches/webview-promax-plan.patch` extends that explicit
+list; unknown and enterprise plans retain workspace-policy checks. Preserve
+this behavior when replacing Desktop assets, and run
+`node --test tests/promax-plan.test.cjs tests/local-only-catalog.test.cjs`.
+An unrecognized personal plan can otherwise fall into workspace-settings errors
+and switch the UI to Work, hiding the local project and conversation catalog.

@@ -1,0 +1,11 @@
+--- a/webview/assets/app-initial-236e1501144c.js
++++ b/webview/assets/app-initial-236e1501144c.js
+@@ -185023,7 +185023,7 @@
+       jO(),
+       Hjn(),
+       ($jn = AO.FREE),
+-      (eMn = [AO.FREE, AO.GO, AO.PLUS, AO.PROLITE, AO.PRO]),
++      (eMn = [AO.FREE, AO.GO, AO.PLUS, AO.PROLITE, AO.PRO, `promax`]),
+       (tMn = `1463309241`),
+       (nMn = `3389661532`),
+       (rMn = `2074582776`),
