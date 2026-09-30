@@ -15,7 +15,7 @@ import {
   type RealtimeWindowMessage,
 } from "./realtime";
 import { installQuotaRecovery } from "./quota-recovery";
-import { downloadLocalFile, type LocalFileOpenRequest } from "./downloads";
+import { downloadLocalFile, localDownloadPath } from "./downloads";
 import {
   mapBrowserPathToInitialRoute,
   mapMemoryPathToBrowserPath,
@@ -138,7 +138,8 @@ type ElectronShimState = {
   >["browserHost"];
   openLocalHtml?: (request: HtmlPreviewRequest) => boolean;
   preferLightweightVoiceRenderer?: boolean;
-  downloadLocalFile?: (request: LocalFileOpenRequest) => boolean;
+  downloadLocalFile?: typeof downloadLocalFile;
+  localDownloadPath?: typeof localDownloadPath;
   initialRoute?: string;
   initialSidebarState?: boolean;
   closeSidebar?: () => void;
@@ -477,6 +478,7 @@ window.addEventListener("pagehide", (event) => {
 });
 electronShim.preferLightweightVoiceRenderer = true;
 electronShim.downloadLocalFile = downloadLocalFile;
+electronShim.localDownloadPath = localDownloadPath;
 electronShim.openLocalHtml = openLocalHtml;
 const buildFlavor: "prod" | "dev" | "agent" | string = "prod";
 

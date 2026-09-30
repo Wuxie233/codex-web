@@ -8,3 +8,17 @@
    return lx(iX.openIn.open(e));
  }
  var MRi,
+@@ -294144,5 +294144,13 @@
+         },
+       }),
++    window.__ELECTRON_SHIM__?.localDownloadPath?.({ path: f, cwd: i, hostId: o, openMode: u }, true) &&
++      _.push({
++        id: `workspace-file-download`,
++        message: { id: `codexWeb.fileReference.download`, defaultMessage: `下载` },
++        onSelect: () => {
++          window.__ELECTRON_SHIM__.downloadLocalFile({ path: f, cwd: i, hostId: o, openMode: u }, true);
++        },
++      }),
+     _.push({
+       id: `workspace-file-copy-path`,
+       message: XW.copyPath,

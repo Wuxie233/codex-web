@@ -9,7 +9,7 @@ export type LocalFileOpenRequest = {
   hostId?: string | null;
 };
 
-export function localDownloadPath(request: LocalFileOpenRequest): string | null {
+export function localDownloadPath(request: LocalFileOpenRequest, explicit = false): string | null {
   if (request.openMode === "workspace") return null;
   if (request.hostId != null && request.hostId !== "local") return null;
   let path = request.path;
@@ -27,11 +27,11 @@ export function localDownloadPath(request: LocalFileOpenRequest): string | null 
     path = `${request.cwd.replace(/\/$/, "")}/${path}`;
   }
   if (!path.startsWith("/") || path.startsWith("//") || path.includes("\0")) return null;
-  return downloadableArchive.test(path) ? path : null;
+  return explicit || downloadableArchive.test(path) ? path : null;
 }
 
-export function downloadLocalFile(request: LocalFileOpenRequest): boolean {
-  const path = localDownloadPath(request);
+export function downloadLocalFile(request: LocalFileOpenRequest, explicit = false): boolean {
+  const path = localDownloadPath(request, explicit);
   if (!path) return false;
   void fetchDownload(path).catch((error: unknown) => {
     const message = error instanceof Error ? error.message : "网络连接失败，请重试。";

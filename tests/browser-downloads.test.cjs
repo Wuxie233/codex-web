@@ -91,3 +91,29 @@ test('network failures are visible and create no download', async () => {
   assert.equal(f.blobs.length, 0);
   assert.equal(f.alerts.length, 1);
 });
+
+test('explicit downloads save documents without changing default previews', async () => {
+  const f = fixture();
+  for (const name of ['方案.md', 'report.pdf', 'image.png', 'code.ts', 'LICENSE']) {
+    const request = {path: name, cwd: '/tmp/project', hostId: 'local'};
+    assert.equal(f.downloadLocalFile(request), false);
+    assert.equal(f.downloadLocalFile(request, true), true);
+    await new Promise(setImmediate);
+    assert.equal(f.downloads.at(-1).name, name);
+    assert.equal(new URL(f.requests.at(-1).url, 'https://example.com').searchParams.get('path'), `/tmp/project/${name}`);
+  }
+});
+
+test('explicit downloads still reject remote hosts, invalid paths and workspaces', () => {
+  const f = fixture();
+  for (const request of [
+    {path: '/tmp/report.md', hostId: 'ssh:server'},
+    {path: 'https://example.com/report.md'},
+    {path: 'file://server/tmp/report.md'},
+    {path: '//server/report.md'},
+    {path: 'report.md'},
+    {path: '/tmp/project', openMode: 'workspace'},
+    {path: 'file:///tmp/bad%00.md'},
+  ]) assert.equal(f.downloadLocalFile(request, true), false);
+  assert.equal(f.requests.length, 0);
+});
