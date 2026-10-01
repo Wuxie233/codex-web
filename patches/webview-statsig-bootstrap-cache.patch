@@ -1,0 +1,57 @@
+--- a/webview/assets/app-initial-236e1501144c.js
++++ b/webview/assets/app-initial-236e1501144c.js
+@@ -426436,7 +426436,7 @@
+     });
+ }
+ function QUo(e) {
+-  let t = (0, K3.c)(44),
++  let t = (0, K3.c)(45),
+     {
+       appSessionId: n,
+       appVersion: r,
+@@ -426457,7 +426457,9 @@
+   t[0] !== p || t[1] !== l
+     ? ((g = async (e) => {
+         h.current += 1;
+-        let t = await cUo(e);
++        let t = await window.__ELECTRON_SHIM__.cachedStatsigBootstrap(
++          e.bootstrapCacheKey, () => cUo(e),
++        );
+         try {
+           let e = new aWo.StatsigClient(l, t.user, p === !0 ? mWo : hWo);
+           return (
+@@ -426499,6 +426501,7 @@
+       }),
+       (t[4] = g),
+       (t[5] = v));
++  const bootstrapCacheKey = JSON.stringify([i.userId, i.accountId, i.authMethod, i.computeResidency, i.email, i.requiresAuth, i.hasChatGptToken, i.planAtLogin, r, a, o, c, l, m, u, d]);
+   let { data: y, error: b, mutate: x, status: S } = Cb(v),
+     C,
+     w;
+@@ -426512,7 +426515,7 @@
+     t[12] !== c ||
+     t[13] !== x ||
+     t[14] !== u ||
+-    t[15] !== d
++    t[15] !== d || t[44] !== bootstrapCacheKey
+       ? ((C = () => {
+           if (S !== `idle`) return;
+           let e = !1;
+@@ -426520,6 +426523,7 @@
+             queueMicrotask(() => {
+               e ||
+                 x({
++                  bootstrapCacheKey,
+                   appSessionId: n,
+                   appVersion: r,
+                   buildFlavor: o,
+@@ -426536,7 +426540,8 @@
+             }
+           );
+         }),
+-        (w = [n, r, S, a, m, o, c, x, u, d]),
++        (w = [n, r, S, a, m, o, c, x, u, d, bootstrapCacheKey]),
++        (t[44] = bootstrapCacheKey),
+         (t[6] = n),
+         (t[7] = r),
+         (t[8] = m),

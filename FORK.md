@@ -151,6 +151,20 @@ mtimes and validators. Keep cache revalidation: upstream-looking filenames do
 not change when this fork patches their contents, so immutable caching is unsafe.
 Always rebuild browser delivery after changing patched webview files.
 
+The browser reuses a successful post-login Statsig bootstrap for up to five
+minutes in the same tab. The cache identity includes the authenticated account,
+app version, locale, client key and evaluation context; authentication still runs
+before lookup. Gzip compression keeps large bootstrap payloads within Web Storage
+limits. Warm loads revalidate in the background while the native Statsig client
+retains its refresh behavior. Temporary background failures retain the original
+expiry timestamp; HTTP 401/403 invalidates the entry. Generation checks prevent a
+late old-account refresh from overwriting a newer account. Expired, corrupt or
+unavailable caches use the original network path; cold startup still depends on
+remote services.
+Run `node --test tests/bootstrap-cache.test.cjs` for isolation, expiration,
+quota and fallback checks, and `node tests/browser/reload-timing.cjs` against a
+running server for cold/warm composer readiness (no model turn is sent).
+
 Validation: `node --test tests/delivery-module.test.cjs`, then with the server
 running `node tests/browser/delivery-headers.cjs` and the existing sidebar tests.
 For browser timing, Playwright `httpCredentials` disables cache through request

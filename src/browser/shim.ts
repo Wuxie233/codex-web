@@ -1,3 +1,4 @@
+import { cachedStatsigBootstrap } from "./bootstrap-cache";
 import { installConnectionHealth } from "./connection-health";
 import {
   openBrowserUrl,
@@ -131,6 +132,7 @@ type StatsigGateEvaluation = {
 };
 
 type ElectronShimState = {
+  cachedStatsigBootstrap?: typeof cachedStatsigBootstrap;
   createRemoteBrowserWebview?: ReturnType<
     typeof createRemoteBrowserBridge
   >["createWebview"];
@@ -465,6 +467,7 @@ const themeMediaQuery = matchMedia("(prefers-color-scheme: dark)");
 const mobileMediaQuery = matchMedia("(max-width: 768px)");
 const initialSidebarState = !mobileMediaQuery.matches;
 const electronShim = (window.__ELECTRON_SHIM__ ??= {});
+electronShim.cachedStatsigBootstrap = cachedStatsigBootstrap;
 const remoteBrowser = createRemoteBrowserBridge({
   emitMessage: (message) =>
     emitRendererEvent("codex_desktop:message-for-view", [message]),
