@@ -796,6 +796,11 @@ const crashReporter = {
 };
 
 const net = {
+  isOnline(): boolean {
+    // There is no Chromium network monitor in this Node host. Keep reconnect
+    // attempts enabled; the transport handshake determines actual reachability.
+    return true;
+  },
   async fetch(input: string | URL, init?: RequestInit): Promise<Response> {
     // log("net.fetch", [input, init]);
     if (typeof globalThis.fetch === "function") {

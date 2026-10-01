@@ -1,0 +1,30 @@
+--- a/.vite/build/src-VqXTPopo.js
++++ b/.vite/build/src-VqXTPopo.js
+@@ -44362,12 +44362,13 @@
+   uU = class {
+     options;
+     kind = `stdio`;
++    proxySupportsReconnect = !1;
+     ioStatsTracker = new SV();
+     constructor(e) {
+       this.options = e;
+     }
+     supportsReconnect() {
+-      return this.kind === `websocket`;
++      return this.kind === `websocket` || this.proxySupportsReconnect;
+     }
+     async connect() {
+       let e =
+@@ -44379,6 +44380,12 @@
+         throw Error(
+           `Unable to locate the Codex CLI binary. Set CODEX_CLI_PATH or ensure the Electron resources include bin/codex.`,
+         );
++      // The helper's stdio process bridges an independently managed daemon.
++      // Reconnect with a fresh proxy and initialize handshake after it exits.
++      this.proxySupportsReconnect =
++        this.options.hostConfig.kind === `local` &&
++        (0, i.basename)(t.executablePath) === `codex_remote_proxy` &&
++        Boolean(t.env?.CODEX_UNIX_SOCKET);
+       let n = (0, i.join)(
+         iA(),
+         `app-server-control`,

@@ -78,6 +78,11 @@ nix shell github:0xcaff/codex-web github:0xcaff/codex-web#codex_remote_proxy -c 
 '
 ```
 
+With `codex_remote_proxy` and `CODEX_UNIX_SOCKET`, a daemon restart uses the
+app's reconnect backoff and a fresh initialize handshake. Pending requests fail
+on disconnect; already-sent requests are not replayed. Ordinary local CLI
+processes retain their existing fatal-error behavior.
+
 `codex app-server proxy --sock ...` is a raw stdio protocol bridge for another
 program to use; when run directly in a terminal it will wait for protocol input
 rather than opening an interactive prompt.
