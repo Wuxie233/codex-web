@@ -13,6 +13,7 @@ type CodexFetchMessage = {
 type PickFilesRequest = {
   imagesOnly?: boolean;
   pickerTitle?: string;
+  allowMultiple?: boolean;
 };
 
 function openBrowserFilePicker({
@@ -83,28 +84,61 @@ function openBrowserFilePicker({
   });
 }
 
-export async function uploadFiles(files: File[]) {
-  if (files.length === 0) {
-    return [];
-  }
+type UploadedFile = { label: string; path: string; fsPath: string };
+const MAX_UPLOAD_BYTES = 128 * 1024 * 1024;
 
-  const uploadUrl = new URL("/__backend/upload", window.location.href);
-  const formData = new FormData();
-
+export async function uploadFiles(files: File[]): Promise<UploadedFile[]> {
   for (const file of files) {
-    formData.append("files", file, file.name || "upload");
+    if (file.size > MAX_UPLOAD_BYTES) {
+      throw new Error(`${file.name}: maximum file size is 128 MiB`);
+    }
   }
-
-  const response = await fetch(uploadUrl, {
-    method: "POST",
-    body: formData,
-  });
-
-  if (!response.ok) {
-    throw new Error(`Upload failed: ${response.status} ${response.statusText}`);
+  const uploaded: UploadedFile[] = new Array(files.length);
+  const controller = new AbortController();
+  let next = 0;
+  let failure: unknown;
+  // Bound mobile memory and avoid rejecting an entire selection at the proxy's
+  // request-size limit. Index results so network completion cannot reorder files.
+  async function worker() {
+    while (!controller.signal.aborted && next < files.length) {
+      const index = next++;
+      const file = files[index]!;
+      try {
+        const formData = new FormData();
+        formData.append("files", file, file.name || "upload");
+        const response = await fetch(
+          new URL("/__backend/upload", window.location.href),
+          {
+            method: "POST",
+            body: formData,
+            signal: controller.signal,
+          },
+        );
+        if (!response.ok) {
+          throw new Error(`${file.name}: upload failed (${response.status})`);
+        }
+        const result = await response.json();
+        const item = result.files?.[0];
+        if (
+          result.files?.length !== 1 ||
+          typeof item?.fsPath !== "string" ||
+          typeof item?.path !== "string" ||
+          typeof item?.label !== "string"
+        ) {
+          throw new Error(`${file.name}: invalid upload response`);
+        }
+        uploaded[index] = item;
+      } catch (error) {
+        if (!controller.signal.aborted) {
+          failure = error;
+          controller.abort();
+        }
+      }
+    }
   }
-
-  return (await response.json()).files;
+  await Promise.all(Array.from({ length: Math.min(2, files.length) }, worker));
+  if (controller.signal.aborted) throw failure;
+  return uploaded;
 }
 
 export async function handleLocalFilePickerMessage(message: CodexFetchMessage) {
@@ -128,7 +162,9 @@ export async function handleLocalFilePickerMessage(message: CodexFetchMessage) {
 
 async function handleLocalFilePickerMessageInner(message: CodexFetchMessage) {
   const request = parsePickFilesRequest(message);
-  const allowMultiple = message.url === "vscode://codex/pick-files";
+  const allowMultiple =
+    message.url === "vscode://codex/pick-files" &&
+    request.allowMultiple !== false;
 
   const selectedFiles = await openBrowserFilePicker({
     allowMultiple,
@@ -137,7 +173,7 @@ async function handleLocalFilePickerMessageInner(message: CodexFetchMessage) {
 
   const uploadedFiles = await uploadFiles(selectedFiles);
 
-  return allowMultiple
+  return message.url === "vscode://codex/pick-files"
     ? { files: uploadedFiles }
     : { file: uploadedFiles[0] ?? null };
 }
@@ -168,6 +204,10 @@ function parsePickFilesRequest(message: CodexFetchMessage): PickFilesRequest {
       return {};
     }
     return {
+      allowMultiple:
+        typeof parsed.allowMultiple === "boolean"
+          ? parsed.allowMultiple
+          : undefined,
       imagesOnly:
         typeof parsed.imagesOnly === "boolean" ? parsed.imagesOnly : undefined,
       pickerTitle:

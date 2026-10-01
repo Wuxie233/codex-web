@@ -112,6 +112,30 @@ Checks: `node tests/browser/project-sources.cjs` and
 `node tests/browser/project-actions.cjs` with the same Playwright
 environment as other browser checks.
 
+### Browser attachment uploads
+
+`src/browser/files.ts` uploads each selected file in its own request, with at
+most two requests in flight and results kept in selection order. The whole
+selection is checked against the 128 MiB per-file limit before uploading. An
+error aborts remaining requests and reports failure instead of attaching a
+partial selection.
+
+`src/server/uploads.ts` streams multipart files to unique paths while retaining
+safe filename extensions, which the native composer needs to identify image
+attachments. Failed requests remove their partial and completed files. A
+reverse proxy must allow at least 129 MiB on `/__backend/upload` to accommodate
+one maximum-size file plus multipart overhead; other routes need no increase.
+Filesystem responses apply sandbox CSP to every MIME type, including SVG and
+other document formats selected by the preserved extensions.
+
+Checks: `npm run build:server`, then `node --test tests/uploads.test.cjs
+tests/browser-files.test.cjs tests/paste-files.test.cjs tests/download.test.cjs`.
+With the service running, `node tests/browser/uploads.cjs` verifies mobile
+multi-selection, decoded image previews and a 34 MiB document selection without
+sending a message. It accepts `TEST_BASE_URL`, `CHROME_PATH` and optional
+`TEST_BASIC_AUTH` (base64 username/password). It cleans up its returned upload
+files when run on the server host. This does not replace physical-device testing.
+
 ### Startup asset delivery
 
 `build:browser` also prepares `scratch/webview-delivery` from the patched source.

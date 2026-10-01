@@ -7,14 +7,12 @@ declare global {
 }
 
 import { execFileSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { parseArgs as parseCliArgs } from "node:util";
 import { WebSocket, WebSocketServer } from "ws";
 import Fastify from "fastify";
-import fastifyMultipart from "@fastify/multipart";
 import fastifyStatic from "@fastify/static";
 import { installModuleAliasHook } from "./module";
 import { glob } from "glob";
@@ -22,6 +20,7 @@ import { rebaseRequestDeadlines } from "./request-deadline";
 import { isIsolatedBrowserRequest, isUserAppNavigation } from "./browser-isolation";
 import { registerBrowserPreviewRoutes } from "./browser-preview";
 import { registerDownloadRoute } from "./download";
+import { registerUploadRoutes } from "./uploads";
 import { RemoteBrowser } from "./remote-browser";
 import { registerRemoteBrowserRoutes } from "./remote-browser-routes";
 import { QuotaRecovery } from "./quota-recovery";
@@ -467,52 +466,18 @@ async function startIpcBridgeServer(options: ServerOptions): Promise<void> {
     },
   });
 
-  await app.register(fastifyMultipart, {
-    limits: {
-      fileSize: Infinity,
-    },
-  });
-
-  const uploadRoot = await fs.mkdtemp(
-    path.join(os.tmpdir(), "codex-web-uploads-"),
-  );
-
-  app.post("/__backend/upload", async (request, reply) => {
-    if (!request.isMultipart()) {
-      return reply.code(400).send({ error: "expected multipart upload body" });
-    }
-
-    const files = await Array.fromAsync(
-      (async function* () {
-        for await (const part of request.files()) {
-          const label = part.filename?.trim() || "upload";
-
-          const uploadedPath = path.join(uploadRoot, randomUUID());
-
-          await fs.writeFile(uploadedPath, await part.toBuffer());
-
-          yield {
-            label,
-            path: uploadedPath,
-            fsPath: uploadedPath,
-          };
-        }
-      })(),
-    );
-
-    return reply.send({ files });
-  });
+  await registerUploadRoutes(app);
 
   await app.register(fastifyStatic, {
     root: "/",
     prefix: "/@fs/",
     decorateReply: false,
-    setHeaders(response, filePath) {
-      if (/\.html?$/i.test(filePath))
-        response.setHeader(
-          "Content-Security-Policy",
-          "sandbox allow-scripts; connect-src 'none'; form-action 'none'",
-        );
+    setHeaders(response) {
+      // Uploaded suffixes can select active document MIME types, not only HTML.
+      response.setHeader(
+        "Content-Security-Policy",
+        "sandbox allow-scripts; connect-src 'none'; form-action 'none'",
+      );
     },
   });
 
