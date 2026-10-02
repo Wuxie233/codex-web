@@ -12,6 +12,7 @@ import os from "node:os";
 import path from "node:path";
 import { parseArgs as parseCliArgs } from "node:util";
 import { WebSocket, WebSocketServer } from "ws";
+import { ResumableBridge } from "./resumable-bridge";
 import Fastify from "fastify";
 import fastifyStatic from "@fastify/static";
 import { installModuleAliasHook } from "./module";
@@ -524,7 +525,8 @@ async function startIpcBridgeServer(options: ServerOptions): Promise<void> {
     });
   });
 
-  const rendererSockets = new Map<number, WebSocket>();
+  const rendererSockets = new Map<number, WebSocket | ResumableBridge>();
+  const resumableBridges = new Map<string, ResumableBridge>();
   const realtimeWindows = new RealtimeWindows((owner, message) => {
     const socket = rendererSockets.get(owner);
     if (socket?.readyState !== WebSocket.OPEN) return false;
@@ -549,7 +551,8 @@ async function startIpcBridgeServer(options: ServerOptions): Promise<void> {
     }
   };
 
-  websocketServer.on("connection", (socket, request) => {
+  websocketServer.on("connection", (transport, request) => {
+    let socket: WebSocket | ResumableBridge = transport;
     const params = new URL(request.url ?? "/", "http://localhost").searchParams;
     // Recovery checks must not allocate a throwaway Desktop renderer just before
     // the browser reloads and creates its actual renderer.
@@ -561,11 +564,30 @@ async function startIpcBridgeServer(options: ServerOptions): Promise<void> {
       });
       return;
     }
+    if (!params.has("realtimeToken") && params.has("resumeToken")) {
+      const bridge = resumableBridges.get(params.get("resumeToken")!);
+      if (!bridge || !params.has("after") || !bridge.attach(transport, Number(params.get("after")))) {
+        transport.send(JSON.stringify({ type: "bridge-recovery-ready" }));
+        transport.close(1000, "Session unavailable");
+      }
+      return;
+    }
+    if (!params.has("realtimeToken") && params.get("resumable") === "1") {
+      const bridge = new ResumableBridge(() => resumableBridges.delete(bridge.token));
+      resumableBridges.set(bridge.token, bridge);
+      bridge.attach(transport);
+      socket = bridge;
+    }
     const token = new URL(
       request.url ?? "/",
       "http://localhost",
     ).searchParams.get("realtimeToken");
     let rendererWindow: RendererWindow | undefined;
+    if (socket instanceof ResumableBridge) {
+      socket.on("detached", () => {
+        if (rendererWindow) realtimeWindows.closeOwner(rendererWindow.webContents.id);
+      });
+    }
     const messagePorts = new Map<string, WebSocketMessagePort>();
     const disconnectMessagePorts = (): void => {
       for (const port of messagePorts.values()) port.disconnect();
@@ -636,7 +658,7 @@ async function startIpcBridgeServer(options: ServerOptions): Promise<void> {
       }
     });
 
-    socket.on("message", async (rawData) => {
+    socket.on("message", async (rawData: unknown) => {
       // Transport health is independent of slow app-view initialization.
       try {
         const probe = JSON.parse(String(rawData));

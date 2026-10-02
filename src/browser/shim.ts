@@ -166,6 +166,9 @@ declare const __CODEX_APP_VERSION__: string;
 let requestCounter = 0;
 let socket: WebSocket | null = null;
 let needsReload = false;
+let resumeToken: string | null = null;
+let receivedSequence = 0;
+const interruptedRequests = new Set<string>();
 let reconnectTimeoutId: number | null = null;
 const outboundQueue: RendererToMainMessage[] = [];
 const pendingInvokes = new Map<
@@ -255,7 +258,7 @@ function handleIncomingMessage(message: MainToRendererMessage): void {
 }
 
 function flushOutboundQueue(): void {
-  if (needsReload || !socket || socket.readyState !== WebSocket.OPEN) {
+  if (needsReload || navigator.onLine === false || !socket || socket.readyState !== WebSocket.OPEN) {
     return;
   }
   for (const message of outboundQueue.splice(0)) {
@@ -289,21 +292,53 @@ function ensureSocket(): void {
   // A delayed close event must not bypass port cleanup during foreground recovery.
   if (socket) disconnectSocket(socket);
   const current = new WebSocket(
-    `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.host}/__backend/ipc${realtimeToken ? `?${new URLSearchParams({ realtimeToken })}` : needsReload ? "?recoveryProbe=1" : ""}`,
+    `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.host}/__backend/ipc${realtimeToken ? `?${new URLSearchParams({ realtimeToken })}` : resumeToken ? `?${new URLSearchParams({ resumeToken, after: String(receivedSequence) })}` : needsReload ? "?recoveryProbe=1" : "?resumable=1"}`,
   );
   socket = current;
   current.addEventListener("open", () => {
     if (socket !== current) return;
-    // App-host RPC transfers MessagePorts once at startup. A new connection needs
-    // a fresh app view; replaying requests against the closed ports cannot recover it.
-    if (needsReload) return;
+    // Resume must finish replaying server events before sending new requests.
+    if (needsReload && !resumeToken) return;
     connectionHealth?.opened();
+    if (needsReload) return;
     flushOutboundQueue();
   });
   current.addEventListener("message", (event) => {
     if (socket !== current) return;
     try {
-      const message = JSON.parse(String(event.data)) as MainToRendererMessage;
+      let message = JSON.parse(String(event.data));
+      if (message.type === "bridge-session") {
+        resumeToken = message.token;
+        return;
+      }
+      if (message.type === "bridge-resumed") {
+        // A lost invoke can leave Desktop's RPC exports incomplete. Do not
+        // replay the operation or reject into an unrecoverable renderer.
+        const stillRunning = new Set<string>(message.pendingRequests);
+        for (const id of interruptedRequests) {
+          if (!stillRunning.has(id) &&
+              (pendingInvokes.has(id) || pendingDirectoryEntries.has(id))) {
+            window.location.reload();
+            return;
+          }
+        }
+        interruptedRequests.clear();
+        needsReload = false;
+        flushOutboundQueue();
+        return;
+      }
+      if (message.type === "bridge-frame") {
+        if (message.sequence === receivedSequence + 1) {
+          handleIncomingMessage(message.payload);
+          receivedSequence = message.sequence;
+        } else if (message.sequence > receivedSequence) {
+          // A gap cannot be repaired by applying later events out of order.
+          window.location.reload();
+          return;
+        }
+        current.send(JSON.stringify({ type: "bridge-ack", sequence: receivedSequence }));
+        return;
+      }
       if (connectionHealth?.received(message)) return;
       if (
         (message as { type: string }).type === "bridge-recovery-ready" &&
@@ -339,14 +374,22 @@ function disconnectSocket(current: WebSocket): void {
   closeRealtimeWindows();
   disposeRealtimeMedia?.();
   needsReload = true;
-  const error = new Error("Connection to Codex was lost");
-  for (const pending of pendingInvokes.values()) pending.reject(error);
-  pendingInvokes.clear();
-  for (const pending of pendingDirectoryEntries.values()) pending.reject(error);
-  pendingDirectoryEntries.clear();
-  outboundQueue.length = 0;
-  for (const port of messagePorts.values()) port.close();
-  messagePorts.clear();
+  if (resumeToken) {
+    const unsent = new Set(outboundQueue.flatMap((message) =>
+      "requestId" in message ? [message.requestId] : []));
+    for (const id of pendingInvokes.keys()) if (!unsent.has(id)) interruptedRequests.add(id);
+    for (const id of pendingDirectoryEntries.keys()) if (!unsent.has(id)) interruptedRequests.add(id);
+  }
+  if (!resumeToken) {
+    const error = new Error("Connection to Codex was lost");
+    for (const pending of pendingInvokes.values()) pending.reject(error);
+    pendingInvokes.clear();
+    for (const pending of pendingDirectoryEntries.values()) pending.reject(error);
+    pendingDirectoryEntries.clear();
+    outboundQueue.length = 0;
+    for (const port of messagePorts.values()) port.close();
+    messagePorts.clear();
+  }
   current.close();
 }
 
@@ -369,7 +412,7 @@ const connectionHealth = realtimeToken
     });
 
 function enqueueMessage(message: RendererToMainMessage): void {
-  if (needsReload) return;
+  if (needsReload && !resumeToken) return;
   outboundQueue.push(message);
   ensureSocket();
   flushOutboundQueue();
@@ -381,7 +424,7 @@ function nextRequestId(): string {
 }
 
 function invokeMain(channel: string, args: unknown[]): Promise<unknown> {
-  if (needsReload)
+  if (needsReload && !resumeToken)
     return Promise.reject(
       new Error(
         realtimeToken
@@ -449,7 +492,7 @@ function isOpenInBrowserMessage(value: unknown): value is {
 function requestWorkspaceDirectoryEntries(
   directoryPath: string | null,
 ): Promise<WorkspaceDirectoryEntries> {
-  if (needsReload)
+  if (needsReload && !resumeToken)
     return Promise.reject(new Error("Connection to Codex was lost"));
   const requestId = nextRequestId();
   return new Promise((resolve, reject) => {
@@ -462,6 +505,14 @@ function requestWorkspaceDirectoryEntries(
     });
   });
 }
+
+window.addEventListener("online", flushOutboundQueue);
+
+window.addEventListener("pagehide", (event) => {
+  if (!event.persisted && resumeToken && socket?.readyState === WebSocket.OPEN) {
+    socket.send(JSON.stringify({ type: "bridge-dispose" }));
+  }
+});
 
 const themeMediaQuery = matchMedia("(prefers-color-scheme: dark)");
 const mobileMediaQuery = matchMedia("(max-width: 768px)");

@@ -40,6 +40,24 @@ An incomplete cloud catalog is not necessarily another local page. An authentica
 
 ChatGPT cloud capabilities (including inherited project/chat/cloud-automation entry points) are disabled in this fork. The catalog service also ignores ChatGPT source activation from older clients. Local app-server population, authentication, model access, and local pagination remain unchanged. `patches/local-only-catalog.patch` is applied last; run `node --test tests/local-only-catalog.test.cjs` after extraction. The sync-failure machinery above remains available for local failures; disabling cloud access does not claim that its permissions were repaired.
 
+## Browser connection recovery
+
+A resumable page keeps its renderer and MessagePorts across transport loss for
+10 minutes. The server retains an ordered, acknowledged event log (at most
+16 MiB or 50,000 events per page); reconnect replays missing events before the
+browser flushes newly queued requests. Already-sent operations are never replayed.
+Received invokes still running on the server remain pending after reconnect.
+Interrupted invokes absent from both replay and server pending calls require a
+cold start because Desktop RPC initialization may be incomplete; they are never
+resent.
+Page unload disposes the renderer; expired sessions, missing history and server
+restarts fall back to a full reload. Browser-discarded pages still need a cold
+start. Voice renderers retain their separate close-on-disconnect lifecycle.
+
+The protocol is opt-in, so existing cached clients keep their recovery path.
+Resume tokens belong to one page and stay in memory; all reconnects still pass
+through the deployment's HTTP/WebSocket authentication boundary.
+
 ## Browser/server clock independence
 
 Desktop RPC deadlines assume a shared wall clock. The browser bridge stamps each
