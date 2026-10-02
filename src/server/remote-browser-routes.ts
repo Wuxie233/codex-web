@@ -74,12 +74,10 @@ export function registerRemoteBrowserRoutes(
           RemoteBrowser["command"]
         >[0]);
       } catch (error) {
-        return reply
-          .code(400)
-          .send({
-            error:
-              error instanceof Error ? error.message : "Browser command failed",
-          });
+        return reply.code(400).send({
+          error:
+            error instanceof Error ? error.message : "Browser command failed",
+        });
       }
     },
   );
@@ -87,16 +85,148 @@ export function registerRemoteBrowserRoutes(
   sockets.on("connection", (socket, request) => {
     const url = new URL(request.url!, "http://localhost");
     let unsubscribe: (() => void) | undefined;
+    const acknowledgeFrames = url.searchParams.get("frameAck") === "1";
+    const frames = new Map<number, { sentAt: number; bytes: number }>();
+    let frameWindow = 3;
+    let minimumFrameRtt = Infinity;
+    let frameBytes = 0;
+    let latestFrame: Extract<RemoteBrowserEvent, { type: "frame" }> | undefined;
+    const pendingInputs: (
+      | Parameters<RemoteBrowser["command"]>[0]
+      | { action: "flush"; id: number }
+    )[] = [];
+    let draining = false;
+    const inputController = new AbortController();
     const send = (event: RemoteBrowserEvent) => {
+      if (acknowledgeFrames && event.type === "frame") {
+        latestFrame = event;
+        const bytes = Buffer.byteLength(event.data);
+        if (
+          frames.size >= frameWindow ||
+          (frames.size > 0 && frameBytes + bytes > 512 * 1024) ||
+          socket.readyState !== WebSocket.OPEN
+        )
+          return;
+        latestFrame = undefined;
+        frames.set(event.sequence, { sentAt: performance.now(), bytes });
+        frameBytes += bytes;
+      }
       // Drop stale frames under pressure, never the final navigation/closed state.
       if (
         socket.readyState === WebSocket.OPEN &&
-        (event.type !== "frame" || socket.bufferedAmount < 1024 * 1024)
+        (event.type !== "frame" ||
+          acknowledgeFrames ||
+          socket.bufferedAmount < 1024 * 1024)
       )
         socket.send(JSON.stringify(event));
     };
     try {
       const target = route(Object.fromEntries(url.searchParams));
+      const drain = async () => {
+        if (pendingInputs.length > 256) {
+          pendingInputs.length = 0;
+          send({
+            type: "error",
+            message: "Browser input queue is full; pending input was cancelled",
+          });
+          inputController.abort();
+          socket.close(1008);
+          return;
+        }
+        if (draining) return;
+        draining = true;
+        try {
+          while (pendingInputs.length && socket.readyState === WebSocket.OPEN) {
+            const input = pendingInputs.shift()!;
+            if (input.action === "flush") {
+              socket.send(
+                JSON.stringify({ type: "input-flushed", id: input.id }),
+              );
+              continue;
+            }
+            try {
+              await browser.command(input, inputController.signal, false);
+            } catch (error) {
+              send({
+                type: "error",
+                message:
+                  error instanceof Error
+                    ? error.message
+                    : "Browser input failed",
+              });
+            }
+          }
+        } finally {
+          draining = false;
+        }
+      };
+      socket.on("message", (data) => {
+        try {
+          const message = JSON.parse(data.toString());
+          if (message.type === "frame-ack") {
+            const frame = frames.get(message.sequence);
+            if (frame) {
+              frames.delete(message.sequence);
+              frameBytes -= frame.bytes;
+              // Fill the network flight time without growing a slow-link backlog.
+              minimumFrameRtt = Math.min(
+                minimumFrameRtt,
+                performance.now() - frame.sentAt,
+              );
+              frameWindow = Math.min(
+                16,
+                Math.max(3, Math.ceil((minimumFrameRtt * 60) / 1000) + 1),
+              );
+              if (latestFrame) send(latestFrame);
+            }
+            return;
+          }
+          if (
+            message.type === "input-flush" &&
+            Number.isSafeInteger(message.id)
+          ) {
+            pendingInputs.push({ action: "flush", id: message.id });
+            void drain();
+            return;
+          }
+          if (
+            message.type !== "input" ||
+            !["mouse", "scroll", "key", "text"].includes(message.action)
+          )
+            throw new Error("Unsupported browser input");
+          const input = { ...message, ...target };
+          const previous = pendingInputs.at(-1);
+          // Replace only adjacent moves; button/key transitions retain ordering.
+          if (
+            input.action === "mouse" &&
+            input.eventType === "move" &&
+            previous?.action === "mouse" &&
+            previous.eventType === "move"
+          )
+            pendingInputs[pendingInputs.length - 1] = input;
+          else if (
+            input.action === "scroll" &&
+            previous?.action === "scroll" &&
+            Number.isFinite(input.deltaX) &&
+            Number.isFinite(input.deltaY) &&
+            Number.isFinite(previous.deltaX) &&
+            Number.isFinite(previous.deltaY) &&
+            Math.abs(input.deltaX + previous.deltaX!) <= 10_000 &&
+            Math.abs(input.deltaY + previous.deltaY!) <= 10_000
+          ) {
+            previous.deltaX! += input.deltaX;
+            previous.deltaY! += input.deltaY;
+          } else pendingInputs.push(input);
+          void drain();
+        } catch (error) {
+          send({
+            type: "error",
+            message:
+              error instanceof Error ? error.message : "Invalid browser input",
+          });
+        }
+      });
+      socket.send(JSON.stringify({ type: "input-ready" }));
       unsubscribe = browser.subscribe(
         target.conversationId,
         target.browserTabId,
@@ -109,7 +239,13 @@ export function registerRemoteBrowserRoutes(
       });
       socket.close(1008);
     }
-    socket.once("close", () => unsubscribe?.());
+    socket.once("close", () => {
+      inputController.abort();
+      pendingInputs.length = 0;
+      latestFrame = undefined;
+      frames.clear();
+      unsubscribe?.();
+    });
     socket.on("error", () => socket.close());
   });
   // Upgraded connections must close before Fastify waits for server.close().

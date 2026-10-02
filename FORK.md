@@ -383,8 +383,8 @@ and `npm run build:browser`.
 
 ## Shared browser and HTML viewing
 
-The browser pane runs a real server-side Chromium page, with JPEG frames over a
-receive-only WebSocket and explicit HTTP input commands. It uses the same tab
+The browser pane runs a real server-side Chromium page, with JPEG frames and
+interactive input over a WebSocket, plus HTTP navigation and tool commands. It uses the same tab
 for manual input and task browser tools. Local HTML opens as a file URL;
 relative resources, scripts, forms, history and normal website rendering belong
 to Chromium. The old iframe dialog is removed. The isolated static preview
@@ -416,6 +416,16 @@ them for newly created local tasks. The daemon-provided thread ID selects the
 context; tool arguments cannot choose another task. Existing tasks retain their
 old dynamic-tool catalog. No shared daemon settings or MCP configuration change.
 Failed or uncertain input commands are not automatically replayed.
+
+The bridge serializes input sends with HTTP commands and flushes accepted input
+before navigation or reads. Stop and close bypass that barrier. Connections bind
+input to their own task/tab and cancel queued input on disconnect; adjacent mouse
+moves and scrolls are coalesced. Input does not await renderer title/history reads.
+Clients using `frameAck=1` acknowledge decoded frames. The server retains only the
+newest unsent frame, with an RTT-adaptive 3-16 frame window and a 512 KiB in-flight
+budget (one oversized frame may progress). Older clients retain receive-only
+streaming and HTTP input. New clients also retain HTTP input until the server
+announces `input-ready`, allowing browser assets and the server to update separately.
 
 Checks: build the server and browser, run
 `node --test tests/remote-browser*.test.cjs tests/browser/remote-browser.cjs tests/browser-capability.test.cjs tests/browser-isolation.test.cjs tests/browser-link-routing.test.cjs`,

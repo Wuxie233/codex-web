@@ -99,6 +99,7 @@ interface Tab {
   sequence: number;
   lastUsed: number;
   activeCommands: number;
+  inputRefresh?: Promise<RemoteBrowserState>;
   lastFrame?: Extract<RemoteBrowserEvent, { type: "frame" }>;
   pressedKeys: Set<string>;
   pressedButtons: Set<"left" | "middle" | "right">;
@@ -636,6 +637,7 @@ export class RemoteBrowser {
   async command(
     input: RemoteBrowserCommand,
     signal?: AbortSignal,
+    refreshState = true,
   ): Promise<RemoteBrowserResult> {
     signal?.throwIfAborted();
     if (!input || typeof input !== "object")
@@ -762,8 +764,19 @@ export class RemoteBrowser {
           case "state":
             break;
         }
+        // Interactive input must not wait for a renderer title/history read.
+        if (
+          !refreshState &&
+          !tab.inputRefresh &&
+          !(input.action === "mouse" && input.eventType === "move")
+        ) {
+          tab.inputRefresh = this.refresh(tab).finally(() => {
+            tab.inputRefresh = undefined;
+          });
+          void tab.inputRefresh.catch(() => {});
+        }
         return {
-          state: await this.refresh(tab),
+          state: refreshState ? await this.refresh(tab) : { ...tab.state },
           ...(value === undefined ? {} : { value }),
         };
       } catch (error) {

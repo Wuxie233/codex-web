@@ -40,6 +40,8 @@ type Page = {
   migration?: { target: BrowserRoute; promise: Promise<void> };
   queue: Promise<unknown>;
   socket?: WebSocket;
+  inputSocket?: WebSocket;
+  inputBarrier?: { id: number; resolve(): void; reject(error: Error): void };
   reconnect?: ReturnType<typeof setTimeout>;
   disposed: boolean;
   mode: "browse" | "comment";
@@ -49,7 +51,7 @@ type Page = {
 };
 type View = {
   element: HTMLElement & { destroy(): void };
-  render(frame: Frame): void;
+  render(frame: Frame): Promise<void>;
   update(): void;
   error(message: string): void;
   cancelAnnotation(): void;
@@ -180,6 +182,25 @@ export function createRemoteBrowserBridge(options: Options) {
   const key = (route: BrowserRoute) =>
     `${route.conversationId}\0${route.browserTabId}`;
   let disposed = false;
+  let nextBarrier = 0;
+
+  function flushInput(page: Page): Promise<void> {
+    const socket = page.socket;
+    if (socket?.readyState !== 1 || page.inputSocket !== socket)
+      return Promise.resolve();
+    return new Promise((resolve, reject) => {
+      const id = ++nextBarrier;
+      page.inputBarrier = { id, resolve, reject };
+      socket.send(JSON.stringify({ type: "input-flush", id }));
+    });
+  }
+
+  function cancelInputBarrier(page: Page) {
+    page.inputBarrier?.reject(
+      new Error("Browser connection closed; input outcome is unknown"),
+    );
+    page.inputBarrier = undefined;
+  }
 
   function pageFor(route: BrowserRoute): Page {
     const id = key(route);
@@ -218,32 +239,44 @@ export function createRemoteBrowserBridge(options: Options) {
     const message = error instanceof Error ? error.message : String(error);
     for (const view of page.views) view.error(message);
   }
+  async function requestCommand(
+    page: Page,
+    action: string,
+    fields: Message,
+  ): Promise<{ state: RemoteBrowserState; value?: unknown }> {
+    if (disposed || page.disposed) throw new Error("Browser tab is closed");
+    if (action !== "stop" && action !== "close") await flushInput(page);
+    const response = await request("/__backend/remote-browser/command", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...page.route, action, ...fields }),
+      credentials: "same-origin",
+    });
+    const result = await response.json();
+    if (!response.ok)
+      throw new BrowserResponseError(
+        result?.error ??
+          result?.message ??
+          `Browser request failed (${response.status})`,
+      );
+    if (!record(result) || !record(result.state))
+      throw new Error("Invalid browser response");
+    const value = result as { state: RemoteBrowserState; value?: unknown };
+    publish(page, value.state);
+    return value;
+  }
   function command(
     page: Page,
     action: string,
     fields: Message = {},
   ): Promise<{ state: RemoteBrowserState; value?: unknown }> {
-    const operation = page.queue.then(async () => {
-      if (disposed || page.disposed) throw new Error("Browser tab is closed");
-      const response = await request("/__backend/remote-browser/command", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...page.route, action, ...fields }),
-        credentials: "same-origin",
+    const interrupt = action === "stop" || action === "close";
+    if (interrupt) disconnect(page);
+    const operation = (interrupt ? Promise.resolve() : page.queue)
+      .then(() => requestCommand(page, action, fields))
+      .finally(() => {
+        if (action === "stop") connect(page);
       });
-      const result = await response.json();
-      if (!response.ok)
-        throw new BrowserResponseError(
-          result?.error ??
-            result?.message ??
-            `Browser request failed (${response.status})`,
-        );
-      if (!record(result) || !record(result.state))
-        throw new Error("Invalid browser response");
-      const value = result as { state: RemoteBrowserState; value?: unknown };
-      publish(page, value.state);
-      return value;
-    });
     // A failed action must not poison subsequent navigation or keyboard input.
     page.queue = operation.catch((error) => report(page, error));
     return operation;
@@ -261,16 +294,31 @@ export function createRemoteBrowserBridge(options: Options) {
     url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
     url.searchParams.set("conversationId", page.route.conversationId);
     url.searchParams.set("browserTabId", page.route.browserTabId);
+    url.searchParams.set("frameAck", "1");
     const socket = new WebSocket(url);
     page.socket = socket;
     socket.addEventListener("message", ({ data }) => {
       if (page.socket !== socket || page.disposed) return;
       try {
         const event = JSON.parse(String(data));
-        if (event.type === "state") publish(page, event.state);
-        else if (event.type === "frame")
-          for (const view of page.views) view.render(event);
-        else if (event.type === "error") report(page, event.message);
+        if (event.type === "input-ready") {
+          page.inputSocket = socket;
+        } else if (event.type === "input-flushed") {
+          if (event.id === page.inputBarrier?.id) {
+            page.inputBarrier.resolve();
+            page.inputBarrier = undefined;
+          }
+        } else if (event.type === "state") publish(page, event.state);
+        else if (event.type === "frame") {
+          void Promise.all(
+            [...page.views].map((view) => view.render(event)),
+          ).finally(() => {
+            if (page.socket === socket && socket.readyState === WebSocket.OPEN)
+              socket.send(
+                JSON.stringify({ type: "frame-ack", sequence: event.sequence }),
+              );
+          });
+        } else if (event.type === "error") report(page, event.message);
         else if (event.type === "closed") closeLocal(page);
       } catch (error) {
         report(page, error);
@@ -278,6 +326,7 @@ export function createRemoteBrowserBridge(options: Options) {
     });
     socket.addEventListener("close", () => {
       if (page.socket !== socket) return;
+      cancelInputBarrier(page);
       page.socket = undefined;
       if (!disposed && !page.disposed && page.views.size) {
         for (const view of page.views) view.error("连接已断开，正在重新连接…");
@@ -289,6 +338,7 @@ export function createRemoteBrowserBridge(options: Options) {
     });
   }
   function disconnect(page: Page) {
+    cancelInputBarrier(page);
     if (page.reconnect) clearTimeout(page.reconnect);
     page.reconnect = undefined;
     const socket = page.socket;
@@ -432,11 +482,28 @@ export function createRemoteBrowserBridge(options: Options) {
     let resizeTimer: ReturnType<typeof setTimeout> | undefined;
     let lastSize = "";
     const pressedKeys = new Set<string>();
-    const send = (action: string, fields: Message = {}) =>
-      safely(
-        ensureOpen(page).then(() => command(page, action, fields)),
-        page,
-      );
+    const send = (action: string, fields: Message = {}) => {
+      const socket = page.socket;
+      const opening = ensureOpen(page);
+      const operation = page.queue
+        .then(() => opening)
+        .then(() => {
+          if (disposed || page.disposed || (socket && socket !== page.socket))
+            throw new Error(
+              "Browser connection changed; pending input was cancelled",
+            );
+          if (
+            ["mouse", "scroll", "key", "text"].includes(action) &&
+            page.inputSocket === socket &&
+            socket?.readyState === 1
+          ) {
+            socket.send(JSON.stringify({ type: "input", action, ...fields }));
+            return;
+          }
+          return requestCommand(page, action, fields);
+        });
+      page.queue = operation.catch((error) => report(page, error));
+    };
     const releasePressedKeys = () => {
       for (const key of pressedKeys) send("key", { eventType: "up", key });
       pressedKeys.clear();
@@ -857,18 +924,22 @@ export function createRemoteBrowserBridge(options: Options) {
     resize.observe(element);
     const view: View = {
       element,
-      render(frame) {
+      async render(frame) {
         if (destroyed || frame.sequence <= renderedSequence) return;
         const image = new Image();
-        image.onload = () => {
+        await new Promise<void>((resolve) => {
+          image.onload = () => resolve();
+          image.onerror = () => resolve();
+          image.src = `data:${frame.mimeType};base64,${frame.data}`;
+        });
+        if (image.naturalWidth) {
           if (destroyed || frame.sequence <= renderedSequence) return;
           renderedSequence = frame.sequence;
-          canvas.width = frame.width;
-          canvas.height = frame.height;
+          if (canvas.width !== frame.width) canvas.width = frame.width;
+          if (canvas.height !== frame.height) canvas.height = frame.height;
           canvas.getContext("2d")?.drawImage(image, 0, 0);
           if (!page.state?.error) status.style.display = "none";
-        };
-        image.src = `data:${frame.mimeType};base64,${frame.data}`;
+        }
       },
       update() {
         canvas.style.cursor = page.mode === "comment" ? "crosshair" : "default";
