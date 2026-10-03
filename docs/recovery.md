@@ -13,9 +13,12 @@
   for the observed account. Failed quota reads cannot erase it; a real identity
   change or verified recovery consumes it. Persisted failures from before the
   account baseline are not treated as evidence about the current account.
-  Same-account recovery still requires an explicit account update and a fresh,
+  Same-account recovery requires an explicit account update or an established
+  backend connection reconnecting after a disconnect, followed by a fresh,
   matching quota response that permits ordinary usage. Account-update logs
-  record the decision without account identifiers or credentials.
+  record the decision without account identifiers or credentials. The initial
+  connection only establishes a baseline. Reconnection covers external credential
+  switchers that restart the backend without emitting `account/updated`.
 - History discovery is background work. Known continuations wait for the send
   lock, never for a history page or unrelated unresolved records. Manual resume
   resolves only the selected records and their parent chains.

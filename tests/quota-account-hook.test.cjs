@@ -58,6 +58,7 @@ function hook() {
       notification = fn;
     },
     registerArchiveSuccessHandler() {},
+    registerInternalConnectionStateHandler() {},
     registerInternalAuthenticatedPrincipalChangeHandler(fn) {
       principal = fn;
     },
