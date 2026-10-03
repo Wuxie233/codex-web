@@ -161,6 +161,7 @@ export class QuotaRecovery {
   private autoResumeOnAccountSwitch = false;
   private accounts = new Map<string, string>();
   private accountUsage = new Map<string, UsageState>();
+  private preAuthUsage = new Map<string, UsageState>();
   private accountUpdates = new Map<string, AccountUpdate>();
   private accountGenerations = new Map<string, number>();
   private autoQueue = new Map<string, AutoAttempt>();
@@ -513,6 +514,8 @@ export class QuotaRecovery {
   // Token refreshes and initial connection are baselines, not account switches.
   accountChanged(host: string, principal: Principal) {
     if (!principal) {
+      // Principal refresh can read the new quota before account/updated arrives.
+      this.preAuthUsage.set(host, this.accountUsage.get(host) ?? "unknown");
       this.accountUpdates.delete(host);
       this.accountGenerations.set(
         host,
@@ -527,6 +530,7 @@ export class QuotaRecovery {
     if (!previous || previous === identity)
       return this.autoRunning ?? Promise.resolve();
     this.accountUsage.delete(host);
+    this.preAuthUsage.delete(host);
     this.accountUpdates.delete(host);
     return this.queueAccountRecovery(host);
   }
@@ -540,11 +544,13 @@ export class QuotaRecovery {
   beginAccountUpdate(host: string): AccountUpdate {
     const update: AccountUpdate = {
       identity: this.accounts.get(host),
-      exhausted: this.accountUsage.get(host) === "exhausted",
+      exhausted:
+        (this.preAuthUsage.get(host) ?? this.accountUsage.get(host)) === "exhausted",
       generation: this.accountGenerations.get(host) ?? 0,
       quotaRevision: this.quotaRevision,
     };
     this.accountUpdates.set(host, update);
+    this.preAuthUsage.delete(host);
     this.accountUsage.delete(host);
     return update;
   }

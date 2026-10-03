@@ -6,6 +6,9 @@
   inventory or recap. Child failures are resolved to the parent task; the message
   asks that parent to continue existing child agents in their original context
   instead of replacing them solely because of the interruption.
+- Same-account login checks retain the quota snapshot from principal cache
+  invalidation until `account/updated`, so an earlier fresh quota read cannot
+  erase the exhausted-to-available transition. Quota reads alone do not resume work.
 - History discovery is background work. Known continuations wait for the send
   lock, never for a history page or unrelated unresolved records. Manual resume
   resolves only the selected records and their parent chains.
