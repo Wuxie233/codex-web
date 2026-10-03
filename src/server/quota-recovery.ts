@@ -162,6 +162,7 @@ export class QuotaRecovery {
   private accounts = new Map<string, string>();
   private accountUsage = new Map<string, UsageState>();
   private preAuthUsage = new Map<string, UsageState>();
+  private quotaFailureAccounts = new Map<string, string>();
   private accountUpdates = new Map<string, AccountUpdate>();
   private accountGenerations = new Map<string, number>();
   private autoQueue = new Map<string, AutoAttempt>();
@@ -531,6 +532,7 @@ export class QuotaRecovery {
       return this.autoRunning ?? Promise.resolve();
     this.accountUsage.delete(host);
     this.preAuthUsage.delete(host);
+    this.quotaFailureAccounts.delete(host);
     this.accountUpdates.delete(host);
     return this.queueAccountRecovery(host);
   }
@@ -542,16 +544,23 @@ export class QuotaRecovery {
   // Native account/updated invalidates its principal cache before notifying us.
   // Keep the prior usage baseline across that temporary null principal.
   beginAccountUpdate(host: string): AccountUpdate {
+    const identity = this.accounts.get(host);
+    const before = this.preAuthUsage.get(host) ?? this.accountUsage.get(host);
+    const terminalQuotaFailure =
+      identity !== undefined && this.quotaFailureAccounts.get(host) === identity;
     const update: AccountUpdate = {
-      identity: this.accounts.get(host),
-      exhausted:
-        (this.preAuthUsage.get(host) ?? this.accountUsage.get(host)) === "exhausted",
+      identity,
+      exhausted: before === "exhausted" || terminalQuotaFailure,
       generation: this.accountGenerations.get(host) ?? 0,
       quotaRevision: this.quotaRevision,
     };
     this.accountUpdates.set(host, update);
     this.preAuthUsage.delete(host);
     this.accountUsage.delete(host);
+    console.info("[quota-recovery] account-update", {
+      before: before ?? "unknown",
+      terminalQuotaFailure,
+    });
     return update;
   }
   completeAccountUpdate(
@@ -564,15 +573,22 @@ export class QuotaRecovery {
       return this.autoRunning ?? Promise.resolve();
     this.accountUpdates.delete(host);
     this.accountRateLimitsRead(host, principal, response);
-    if (
-      !principal ||
-      update.identity !== identityOf(principal) ||
-      !update.exhausted ||
-      this.accountUsage.get(host) !== "available" ||
-      update.generation !== (this.accountGenerations.get(host) ?? 0) ||
-      update.quotaRevision !== this.quotaRevision
-    )
+    const after = principal ? usageState(principal, response) : "unknown";
+    const eligible =
+      principal !== null &&
+      update.identity === identityOf(principal) &&
+      update.exhausted &&
+      after === "available" &&
+      update.generation === (this.accountGenerations.get(host) ?? 0) &&
+      update.quotaRevision === this.quotaRevision;
+    console.info("[quota-recovery] account-update-result", {
+      after,
+      eligible,
+      enabled: this.autoResumeOnAccountSwitch,
+    });
+    if (!eligible)
       return this.autoRunning ?? Promise.resolve();
+    this.quotaFailureAccounts.delete(host);
     return this.queueAccountRecovery(host);
   }
   private queueAccountRecovery(host: string) {
@@ -867,6 +883,10 @@ export class QuotaRecovery {
     }
     if (!terminal || !reason || !turnId) return;
     if (reason === "quota") {
+      // A terminal quota error is evidence even when the quota endpoint cannot
+      // be read during token replacement. Never infer an account from history.
+      const identity = this.accounts.get(host);
+      if (identity !== undefined) this.quotaFailureAccounts.set(host, identity);
       this.quotaRevision++;
       this.cancelRateTimers();
       for (const [chainKey, state] of this.rateChains) {

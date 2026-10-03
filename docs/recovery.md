@@ -9,6 +9,13 @@
 - Same-account login checks retain the quota snapshot from principal cache
   invalidation until `account/updated`, so an earlier fresh quota read cannot
   erase the exhausted-to-available transition. Quota reads alone do not resume work.
+- A live terminal quota error also supplies the pre-login exhaustion evidence
+  for the observed account. Failed quota reads cannot erase it; a real identity
+  change or verified recovery consumes it. Persisted failures from before the
+  account baseline are not treated as evidence about the current account.
+  Same-account recovery still requires an explicit account update and a fresh,
+  matching quota response that permits ordinary usage. Account-update logs
+  record the decision without account identifiers or credentials.
 - History discovery is background work. Known continuations wait for the send
   lock, never for a history page or unrelated unresolved records. Manual resume
   resolves only the selected records and their parent chains.
