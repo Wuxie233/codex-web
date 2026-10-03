@@ -972,7 +972,8 @@ export class QuotaRecovery {
       : [...this.entries.values()];
     for (const entry of entries) {
       if (!proceed()) break;
-      if (entry.resolved) continue;
+      if (entry.resolved || ["resumed", "skipped"].includes(entry.status))
+        continue;
       const adapter = this.hosts.get(entry.hostId);
       if (!adapter) continue;
       const status = entry.status;
