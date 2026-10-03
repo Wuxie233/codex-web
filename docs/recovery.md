@@ -28,6 +28,10 @@
   checks still run before dispatch. The client message ID and consumed retry
   budget are persisted before transport writes. Unknown delivery is never
   automatically replayed.
+- Refresh retires an uncertain recovery record when the interrupted turn is
+  followed by confirmed user input. This does not confirm delivery of the old
+  message: its client ID and uncertainty remain in the ledger. History scan
+  invalidation is not a read failure; a fresh full scan replaces old warnings.
 - Quota batches retain a 1.5 second pause after each send to observe immediate
   quota failures before sending the next task. Slow reads of the selected task
   can still delay that task; background history must not.

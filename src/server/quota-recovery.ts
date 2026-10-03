@@ -386,6 +386,9 @@ export class QuotaRecovery {
         if (!allowed()) return;
         while (this.busy || this.scanning) await this.waitUntilIdle();
         if (!allowed()) return;
+        // A fresh full pass replaces the previous scan's warning, just as a
+        // manual refresh does. Incremental pages cannot verify older failures.
+        if (full && cursor === null) this.scanError = undefined;
         this.scanning = (async () => {
           await this.resolveEntries();
           if (!allowed()) return;
@@ -1091,7 +1094,6 @@ export class QuotaRecovery {
           () => !this.busy,
         ))
       ) {
-        this.scanError = "部分任务暂时无法读取，请检查连接后刷新。";
         continue;
       }
       this.discovered.add(host);
@@ -1135,6 +1137,21 @@ export class QuotaRecovery {
       ) {
         entry.status = "resumed";
         entry.detail = "已核对到继续消息";
+      } else if (entry.status === "unknown" && thread) {
+        const interrupted = thread.turns?.findIndex(
+          (turn) => turn.id === entry.turnId,
+        ) ?? -1;
+        if (
+          interrupted >= 0 &&
+          thread.turns?.slice(interrupted + 1).some((turn) =>
+            turn.items?.some((item) => item.type === "userMessage"),
+          )
+        ) {
+          // Later input supersedes this recovery request without proving who
+          // sent it. Keep the uncertain delivery in the ledger; never replay it.
+          entry.status = "skipped";
+          entry.detail = "任务已有后续输入；旧继续消息的发送结果仍未确认";
+        }
       }
     }
     this.save();
@@ -1165,20 +1182,25 @@ export class QuotaRecovery {
   ) {
     const candidates = [...items];
     let complete = true;
+    let readFailed = false;
     await Promise.all(
       Array.from({ length: 4 }, async () => {
         while (candidates.length && proceed()) {
           const item = candidates.shift()!;
           const key = this.key(host, item.id);
           const revision = this.revisions.get(key) ?? 0;
+          const current = () =>
+            this.hosts.get(host) === adapter &&
+            proceed() &&
+            revision === (this.revisions.get(key) ?? 0);
           try {
             const thread = await bounded(adapter.readThread(item.id), 5000);
-            if (
-              !thread ||
-              this.hosts.get(host) !== adapter ||
-              !proceed() ||
-              revision !== (this.revisions.get(key) ?? 0)
-            ) {
+            if (!current()) {
+              complete = false;
+              continue;
+            }
+            if (!thread) {
+              readFailed = true;
               complete = false;
               continue;
             }
@@ -1197,12 +1219,13 @@ export class QuotaRecovery {
                 reason,
               );
           } catch {
+            if (current()) readFailed = true;
             complete = false;
           }
         }
       }),
     );
-    if (!complete) this.scanError = "部分任务暂时无法读取，请检查连接后刷新。";
+    if (readFailed) this.scanError = "部分任务暂时无法读取，请检查连接后刷新。";
     return complete && !candidates.length;
   }
   private async archived(adapter: Adapter, threadId: string) {
