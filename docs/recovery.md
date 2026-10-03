@@ -2,6 +2,10 @@
 
 `src/server/quota-recovery.ts` owns quota and HTTP 429 continuations.
 
+- Continuation messages ask for direct resumption without a recovery-specific
+  inventory or recap. Child failures are resolved to the parent task; the message
+  asks that parent to continue existing child agents in their original context
+  instead of replacing them solely because of the interruption.
 - History discovery is background work. Known continuations wait for the send
   lock, never for a history page or unrelated unresolved records. Manual resume
   resolves only the selected records and their parent chains.

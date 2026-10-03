@@ -1,5 +1,5 @@
 export const RATE_LIMIT_CONTINUATION =
-  "上一轮因请求限流（HTTP 429）而中断，请继续之前未完成的工作。先核对当前进度和已有执行结果，再从中断处接着处理，避免重复执行已完成的操作。";
+  "刚刚因请求限流（HTTP 429）而中断，现在请直接从中断处重试并正常继续。这条消息仅用于恢复执行，不是新任务，无需为此整理或汇报当前内容。若有中断的子 agent，请优先向原子 agent 续发消息，让它从原上下文继续，不要仅因这次中断新建替代 agent。";
 export const RATE_LIMIT_DELAYS = [30000, 60000, 120000] as const;
 export type RecoveryReason = "quota" | "rateLimit";
 // Walk structured protocol errors and their textual HTTP diagnostics. Quota wins
