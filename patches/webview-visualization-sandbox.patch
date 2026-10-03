@@ -1,0 +1,23 @@
+--- a/webview/assets/app-initial-236e1501144c.js
++++ b/webview/assets/app-initial-236e1501144c.js
+@@ -331650,2 +331650,5 @@
+-  let s = crypto.randomUUID(),
+-    { ports: c, replyPort: l } = await new Promise((e, c) => {
++  if (r.startsWith(`visualization-`) && window.__ELECTRON_SHIM__?.connectVisualizationSandbox) {
++    return window.__ELECTRON_SHIM__.connectVisualizationSandbox({ hostApiHandlers: e, signal: i, webview: o });
++  }
++  let s = crypto.randomUUID(),
++    { ports: c, replyPort: l } = await new Promise((e, c) => {
+--- a/webview/assets/app-primary-6b28e06666ff.js
++++ b/webview/assets/app-primary-6b28e06666ff.js
+@@ -69637,1 +69637,1 @@
+-      (n.setAttribute(`sandbox`, `allow-scripts allow-same-origin`),
++      (n.setAttribute(`sandbox`, t.startsWith(`visualization-`) && window.__ELECTRON_SHIM__?.connectVisualizationSandbox ? `allow-scripts` : `allow-scripts allow-same-origin`),
+@@ -71397,3 +71397,4 @@
+-  let b = MT(Em),
+-    x =
+-      y === `live`
++  if (window.__ELECTRON_SHIM__?.connectVisualizationSandbox) m = `https`;
++  let b = MT(Em),
++    x =
++      y === `live`

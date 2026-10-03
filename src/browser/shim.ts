@@ -1,4 +1,5 @@
 import { cachedStatsigBootstrap } from "./bootstrap-cache";
+import { connectVisualizationSandbox } from "./visualization-sandbox";
 import { installConnectionHealth } from "./connection-health";
 import {
   openBrowserUrl,
@@ -132,6 +133,7 @@ type StatsigGateEvaluation = {
 };
 
 type ElectronShimState = {
+  connectVisualizationSandbox?: typeof connectVisualizationSandbox;
   cachedStatsigBootstrap?: typeof cachedStatsigBootstrap;
   createRemoteBrowserWebview?: ReturnType<
     typeof createRemoteBrowserBridge
@@ -518,6 +520,7 @@ const themeMediaQuery = matchMedia("(prefers-color-scheme: dark)");
 const mobileMediaQuery = matchMedia("(max-width: 768px)");
 const initialSidebarState = !mobileMediaQuery.matches;
 const electronShim = (window.__ELECTRON_SHIM__ ??= {});
+electronShim.connectVisualizationSandbox = connectVisualizationSandbox;
 electronShim.cachedStatsigBootstrap = cachedStatsigBootstrap;
 const remoteBrowser = createRemoteBrowserBridge({
   emitMessage: (message) =>

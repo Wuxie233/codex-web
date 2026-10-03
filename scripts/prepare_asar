@@ -97,3 +97,5 @@ patch --batch --forward --fuzz=0 --strip 1 --directory scratch/asar < patches/we
 patch --batch --forward --fuzz=0 --strip 1 --directory scratch/asar < patches/webview-statsig-bootstrap-cache.patch
 
 patch --batch --forward --fuzz=0 --strip 1 --directory scratch/asar < patches/main-proxy-reconnect.patch
+
+patch --batch --forward --fuzz=0 --strip 1 --directory scratch/asar < patches/webview-visualization-sandbox.patch

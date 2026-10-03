@@ -65,6 +65,22 @@ important bits related to wiring up the ipc bridge.
 [preload script]: https://www.electronjs.org/docs/latest/tutorial/tutorial-preload
 [`ipcRenderer`]: https://www.electronjs.org/docs/latest/api/ipc-renderer
 
+## Inline visualizations
+
+Desktop inline visualizations use an Electron `webview` and the `codex-sandbox`
+protocol, which browsers cannot run. The visualization patch routes only these
+previews through `src/browser/visualization-sandbox.ts`, retaining the upstream
+HTML wrapper, sizing, theme updates, and host capability handlers.
+
+The browser adapter uses a `srcdoc` iframe with `sandbox="allow-scripts"` and an
+opaque origin. Its CSP restricts resources to the upstream visualization policy
+and blocks network connections, nested frames, and form submissions. A dedicated
+MessageChannel is transferred only after checking the frame's window and origin;
+host tool calls still pass through the upstream allowlist and authorization.
+Abort, initialization timeout, and teardown dispose the frame and its ports.
+After Desktop upgrades, verify an inline preview in a real browser, including
+interaction, resizing, and navigation away and back.
+
 ## Browser configuration readiness
 
 Composer configuration and model eligibility reads must not wait behind background
