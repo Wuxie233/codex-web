@@ -123,6 +123,7 @@ type Thread = {
   turns?: Turn[];
 };
 export type Adapter = {
+  disposeRecovery?(): void;
   readThread(id: string): Promise<Thread | null>;
   listThreads(
     params: Record<string, unknown>,
@@ -239,6 +240,7 @@ export class QuotaRecovery {
     }
   }
   unregisterHost(host: string) {
+    this.hosts.get(host)?.disposeRecovery?.();
     this.hosts.delete(host);
     this.discovered.delete(host);
     this.rateScanSince.delete(host);
@@ -358,6 +360,7 @@ export class QuotaRecovery {
   // Explicit cleanup is useful to embedders; timers never keep the server alive.
   dispose() {
     this.disposed = true;
+    for (const adapter of this.hosts.values()) adapter.disposeRecovery?.();
     this.rateGeneration++;
     this.cancelRateTimers();
     this.cancelRateScans();
@@ -551,9 +554,15 @@ export class QuotaRecovery {
     const before = this.preAuthUsage.get(host) ?? this.accountUsage.get(host);
     const terminalQuotaFailure =
       identity !== undefined && this.quotaFailureAccounts.get(host) === identity;
+    const previous = this.accountUpdates.get(host);
+    const retainedExhaustion =
+      previous?.identity === identity &&
+      previous?.generation === (this.accountGenerations.get(host) ?? 0) &&
+      previous?.quotaRevision === this.quotaRevision &&
+      previous?.exhausted === true;
     const update: AccountUpdate = {
       identity,
-      exhausted: before === "exhausted" || terminalQuotaFailure,
+      exhausted: before === "exhausted" || terminalQuotaFailure || retainedExhaustion,
       generation: this.accountGenerations.get(host) ?? 0,
       quotaRevision: this.quotaRevision,
     };
@@ -563,6 +572,7 @@ export class QuotaRecovery {
     console.info("[quota-recovery] account-update", {
       before: before ?? "unknown",
       terminalQuotaFailure,
+      retainedExhaustion,
     });
     return update;
   }
@@ -574,21 +584,27 @@ export class QuotaRecovery {
   ) {
     if (this.accountUpdates.get(host) !== update)
       return this.autoRunning ?? Promise.resolve();
-    this.accountUpdates.delete(host);
     this.accountRateLimitsRead(host, principal, response);
     const after = principal ? usageState(principal, response) : "unknown";
-    const eligible =
+    const current =
+      !this.disposed &&
+      this.hosts.has(host) &&
       principal !== null &&
       update.identity === identityOf(principal) &&
       update.exhausted &&
-      after === "available" &&
       update.generation === (this.accountGenerations.get(host) ?? 0) &&
       update.quotaRevision === this.quotaRevision;
+    const eligible = current && after === "available";
+    const retry = current && after === "unknown" && this.autoResumeOnAccountSwitch;
     console.info("[quota-recovery] account-update-result", {
       after,
       eligible,
+      retry,
       enabled: this.autoResumeOnAccountSwitch,
     });
+    // Keep the original switch evidence across transient quota-read failures.
+    if (retry) return Promise.resolve("retry" as const);
+    this.accountUpdates.delete(host);
     if (!eligible)
       return this.autoRunning ?? Promise.resolve();
     this.quotaFailureAccounts.delete(host);
@@ -598,6 +614,7 @@ export class QuotaRecovery {
     const generation = (this.accountGenerations.get(host) ?? 0) + 1;
     this.accountGenerations.set(host, generation);
     if (this.autoResumeOnAccountSwitch) {
+      console.info("[quota-recovery] auto-queued", { generation, busy: this.busy, scanning: !!this.scanning });
       this.autoQueue.set(host, {
         host,
         generation,
@@ -631,7 +648,9 @@ export class QuotaRecovery {
       const [host, attempt] = this.autoQueue.entries().next().value!;
       this.autoQueue.delete(host);
       try {
+        const queuedAt = this.clock.now();
         await this.waitUntilIdle(false);
+        console.info("[quota-recovery] auto-drain", { generation: attempt.generation, waitMs: this.clock.now() - queuedAt, allowed: this.autoAllowed(attempt) });
         if (!this.autoAllowed(attempt)) continue;
         // Known failures can resume immediately; unopened history follows one page at a time.
         await this.resumeAutomatic(attempt);
@@ -1275,6 +1294,9 @@ export class QuotaRecovery {
     if (!Array.isArray(ids) || !ids.every((i) => typeof i === "string"))
       throw Error("无效的任务列表");
     if (this.busy) return this.visibleSnapshot();
+    const startedAt = this.clock.now();
+    const origin = automatic ? "account-switch" : rateAttempt ? "rate-limit" : "manual";
+    if (ids.length) console.info("[quota-recovery] resume-start", { origin, count: ids.length });
     this.busy = true;
     const quotaRevision = this.quotaRevision;
     try {
@@ -1442,6 +1464,7 @@ export class QuotaRecovery {
                 delete entry.detail;
                 this.save(); // Persist before dispatch. A crash or timeout must never cause an automatic replay.
                 dispatched = true;
+                console.info("[quota-recovery] resume-dispatched", { origin, threadId: entry.threadId, waitMs: this.clock.now() - startedAt });
               },
             ),
             45000,
@@ -1455,6 +1478,7 @@ export class QuotaRecovery {
           }
           entry.status = "resumed";
           entry.detail = "已开始继续";
+          console.info("[quota-recovery] resume-confirmed", { origin, threadId: entry.threadId, elapsedMs: this.clock.now() - startedAt });
           this.save();
           // Give immediate quota failures time to arrive before dispatching the next task.
           if (!rateAttempt)
@@ -1480,6 +1504,7 @@ export class QuotaRecovery {
             continue;
           }
           entry.status = dispatched ? "unknown" : "failed";
+          console.info("[quota-recovery] resume-failed", { origin, threadId: entry.threadId, stage, dispatched, elapsedMs: this.clock.now() - startedAt });
           delete entry.retryAt;
           if (dispatched) {
             const chain = this.rateChains.get(key);

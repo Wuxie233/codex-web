@@ -19,6 +19,16 @@
   record the decision without account identifiers or credentials. The initial
   connection only establishes a baseline. Reconnection covers external credential
   switchers that restart the backend without emitting `account/updated`.
+- Account checks run in the server connection, without browser clients. An
+  inconclusive quota read after an eligible account event retains that event
+  and retries after 5, 10, 20, then 30 seconds between completed reads. A new
+  account event, disconnect, logout, identity change, or disposal cancels the
+  old retry. Each result still checks the original account and quota revision;
+  ordinary periodic reads cannot create a recovery event.
+- Server logs under `[quota-recovery]` distinguish account-check source, quota
+  read failure and retry delay, queue waiting, and manual/account-switch/429
+  dispatch and confirmation. Logs contain timings and thread IDs, not credentials
+  or message contents. A dispatch without confirmation remains unknown.
 - History discovery is background work. Known continuations wait for the send
   lock, never for a history page or unrelated unresolved records. Manual resume
   resolves only the selected records and their parent chains.
