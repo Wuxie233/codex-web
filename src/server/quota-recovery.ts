@@ -13,7 +13,7 @@ import {
 export { RATE_LIMIT_CONTINUATION } from "./rate-limit-recovery";
 
 export const CONTINUATION =
-  "刚刚因账号额度不足而中断，现在账号已更新或额度已恢复，请直接从中断处正常继续。这条消息仅用于恢复执行，不是新任务，无需为此整理或汇报当前内容。若有中断的子 agent，请优先向原子 agent 续发消息，让它从原上下文继续，不要仅因这次中断新建替代 agent。";
+  "刚刚因账号额度不足或凭证失效而中断，现在账号已更新或额度已恢复，请直接从中断处正常继续。这条消息仅用于恢复执行，不是新任务，无需为此整理或汇报当前内容。若有中断的子 agent，请优先向原子 agent 续发消息，让它从原上下文继续，不要仅因这次中断新建替代 agent。";
 const RATE_SCAN_INTERVAL = 30000;
 const RATE_SCAN_OVERLAP = 60;
 const RATE_FULL_SCAN_INTERVAL = 300000;

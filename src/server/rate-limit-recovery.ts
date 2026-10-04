@@ -3,7 +3,8 @@ export const RATE_LIMIT_CONTINUATION =
 export const RATE_LIMIT_DELAYS = [30000, 60000, 120000] as const;
 export type RecoveryReason = "quota" | "rateLimit";
 // Walk structured protocol errors and their textual HTTP diagnostics. Quota wins
-// even when an upstream provider also labels the response HTTP 429.
+// even when an upstream provider also labels the response HTTP 429. Expired
+// credentials share the account-change recovery path, not timed 429 retries.
 export function recoveryReason(error: unknown): RecoveryReason | undefined {
   const strings: string[] = [];
   let status429 = false;
@@ -28,6 +29,12 @@ export function recoveryReason(error: unknown): RecoveryReason | undefined {
       /usageLimitExceeded|usage_limit_reached|insufficient_quota|insufficientQuota/.test(
         s,
       ),
+    )
+  )
+    return "quota";
+  if (
+    strings.some((s) =>
+      /\bYour access token could not be refreshed\b|\brefresh_token_(?:expired|reused|invalidated)\b/i.test(s),
     )
   )
     return "quota";

@@ -1,7 +1,12 @@
 # Interrupted task recovery
 
-`src/server/quota-recovery.ts` owns quota and HTTP 429 continuations.
+`src/server/quota-recovery.ts` owns quota, expired-credential, and HTTP 429 continuations.
 
+- Terminal access-token refresh failures (`Your access token could not be
+  refreshed`, `refresh_token_expired`, `refresh_token_reused`, or
+  `refresh_token_invalidated`) use the quota/account-change recovery path in
+  both notifications and history scans. They wait for refreshed credentials
+  and usable quota; generic network errors and HTTP 401 alone do not qualify.
 - Continuation messages ask for direct resumption without a recovery-specific
   inventory or recap. Child failures are resolved to the parent task; the message
   asks that parent to continue existing child agents in their original context

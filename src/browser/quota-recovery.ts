@@ -32,7 +32,7 @@ const settings: {
     channel: "quota-recovery:set-auto-resume",
     label: "换号后自动继续中断任务",
     description:
-      "换号成功，或原账号重新登录后额度从 0% 恢复时，自动继续因额度不足中断的任务。",
+      "换号或重新登录后，确认额度可用时，自动继续因额度不足或凭证失效中断的任务。",
   },
   {
     key: "autoResumeOn429",
@@ -175,7 +175,7 @@ export function installQuotaRecovery(invoke: Invoke): void {
       (snapshot.scanning ? "正在检查中断任务，已找到的任务会陆续显示…" : "") ||
       (loading && !known
         ? "正在读取中断任务…"
-        : totals.join("，") || "没有因额度不足或 429 限流中断的任务。");
+        : totals.join("，") || "没有因额度不足、凭证失效或 429 限流中断的任务。");
     notice.setAttribute("role", error ? "alert" : "status");
     const rowsState = JSON.stringify([
       snapshot.entries,
@@ -352,7 +352,7 @@ export function installQuotaRecovery(invoke: Invoke): void {
     title.textContent = "继续中断任务";
     const description = document.createElement("p");
     description.textContent =
-      "选择因额度不足或 429 限流中断的任务，统一发送继续消息。额度不足时，请先换好账号。";
+      "选择因额度不足、凭证失效或 429 限流中断的任务，统一发送继续消息。额度不足或凭证失效时，请先换号或重新登录。";
     const settingRows = document.createElement("div");
     settingInputs.clear();
     for (const { key, channel, label, description } of settings) {
