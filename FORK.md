@@ -16,6 +16,22 @@ Upstream: https://github.com/0xcaff/codex-web, baseline `0dfdc10768c724d9a6ba507
 - Catalog status reports sync failures independently of completion. Exhausted failed sources do not advertise more pages; cached cursors remain readable. The sidebar offers a separate sync retry and preserves loaded sessions.
 - Keep generated server files and local runtime state out of Git.
 
+## Optional Dot panel
+
+Build the browser with `CODEX_DOT_PANEL_URL` set to an independently hosted
+Dot application URL, for example `https://dot.example.com/dots/home`, to show
+Dot below Explore in the existing sidebar. An unset value preserves the
+original interface. Same-origin URLs and URLs containing credentials are
+rejected. The Dot deployment must explicitly allow this application's origin
+using `CODEX_DOT_EMBED_PARENT_ORIGIN` and protect its HTTP and WebSocket paths
+with its own authentication boundary.
+
+The panel loads the native Dot application in an iframe. Switching panels keeps
+the original conversation tree and draft mounted; ordinary host navigation
+closes Dot. Its runtime, state, and authentication lifecycle are separate from
+the shared Codex daemon. This optional browser entry does not provision that
+runtime or make an unprotected Dot endpoint safe to publish.
+
 ## Shared daemon
 
 Use the upstream `scripts/codex_remote_proxy` with `CODEX_UNIX_SOCKET` pointing to an already-running daemon and `CODEX_CLI_PATH` pointing to that script. The helper requires `websocat`. Run `node src/server/main.js --host 127.0.0.1 --port 8214` directly: the upstream `npm run server` script replaces `CODEX_CLI_PATH`.

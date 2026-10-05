@@ -1,3 +1,4 @@
+import { installDotPanel, type DotPanelHooks } from "./dot-panel";
 import { cachedStatsigBootstrap } from "./bootstrap-cache";
 import { connectVisualizationSandbox } from "./visualization-sandbox";
 import { installConnectionHealth } from "./connection-health";
@@ -133,6 +134,7 @@ type StatsigGateEvaluation = {
 };
 
 type ElectronShimState = {
+  dotPanel?: DotPanelHooks;
   connectVisualizationSandbox?: typeof connectVisualizationSandbox;
   cachedStatsigBootstrap?: typeof cachedStatsigBootstrap;
   createRemoteBrowserWebview?: ReturnType<
@@ -164,6 +166,7 @@ declare global {
 }
 
 declare const __CODEX_APP_VERSION__: string;
+declare const __CODEX_DOT_PANEL_URL__: string;
 
 let requestCounter = 0;
 let socket: WebSocket | null = null;
@@ -260,7 +263,7 @@ function handleIncomingMessage(message: MainToRendererMessage): void {
 }
 
 function flushOutboundQueue(): void {
-  if (needsReload || navigator.onLine === false || !socket || socket.readyState !== WebSocket.OPEN) {
+  if (needsReload || !socket || socket.readyState !== WebSocket.OPEN) {
     return;
   }
   for (const message of outboundQueue.splice(0)) {
@@ -520,6 +523,18 @@ const themeMediaQuery = matchMedia("(prefers-color-scheme: dark)");
 const mobileMediaQuery = matchMedia("(max-width: 768px)");
 const initialSidebarState = !mobileMediaQuery.matches;
 const electronShim = (window.__ELECTRON_SHIM__ ??= {});
+if (__CODEX_DOT_PANEL_URL__) {
+  try {
+    electronShim.dotPanel = installDotPanel({
+      url: __CODEX_DOT_PANEL_URL__,
+      onOpen: () => {
+        if (mobileMediaQuery.matches) electronShim.closeSidebar?.();
+      },
+    });
+  } catch {
+    console.error("Dot panel configuration is invalid");
+  }
+}
 electronShim.connectVisualizationSandbox = connectVisualizationSandbox;
 electronShim.cachedStatsigBootstrap = cachedStatsigBootstrap;
 const remoteBrowser = createRemoteBrowserBridge({
@@ -585,6 +600,7 @@ if (initialRoute.browserPath) {
 
 electronShim.initialSidebarState = initialSidebarState;
 electronShim.onMemoryNavigationChanged = (navigation) => {
+  electronShim.dotPanel?.onHostNavigation();
   const path = navigation.location.pathname;
   if (
     navigation.action !== "POP" &&

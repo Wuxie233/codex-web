@@ -1,0 +1,36 @@
+--- a/webview/assets/app-initial-236e1501144c.js
++++ b/webview/assets/app-initial-236e1501144c.js
+@@ -371879,6 +371879,7 @@
+                                       (0, K$.jsx)(`div`, {
+                                         "aria-hidden": P && E ? !0 : void 0,
+                                         className: W$.MainContentViewport,
++                                        ref: window.__ELECTRON_SHIM__?.dotPanel?.mountContent,
+                                         "data-app-shell-workspace-layout":
+                                           Me?.mode,
+                                         "data-app-shell-main-content-layout": D,
+@@ -371887,6 +371888,7 @@
+                                           E,
+                                         inert: P && E,
+                                         children: (0, K$.jsxs)(Au.div, {
++                                          "data-dot-original-content": "",
+                                           className: K(
+                                             W$.MainContentFrame,
+                                             P &&
+--- a/webview/assets/app-primary-6b28e06666ff.js
++++ b/webview/assets/app-primary-6b28e06666ff.js
+@@ -145349,6 +145349,7 @@
+                         return !d && !t;
+                       }),
+                     }),
++                    window.__ELECTRON_SHIM__?.dotPanel && (0, aZ.jsx)(`div`, { ref: window.__ELECTRON_SHIM__.dotPanel.mountNavigation }),
+                   ],
+                 }),
+         })),
+@@ -145644,6 +145645,7 @@
+             onPinDestination: g,
+           }),
+           !o && (0, aZ.jsx)(uvn, { items: m.filter(Gwn) }),
++          window.__ELECTRON_SHIM__?.dotPanel && (0, aZ.jsx)(`div`, { ref: window.__ELECTRON_SHIM__.dotPanel.mountNavigation }),
+         ],
+       })),
+       (t[0] = u),
