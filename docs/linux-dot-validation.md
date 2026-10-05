@@ -218,6 +218,33 @@ It rejects the main API host `chatgpt.com`. TLS terminates in the
 browser: this restricts destinations, not encrypted requests or WebSocket frames.
 No production browser or system proxy settings are changed.
 
+## Opt-in native Dot embedding
+
+Set `CODEX_DOT_EMBED_PARENT_ORIGIN` on the separate native Dot server to one
+exact HTTP(S) origin, for example `https://codex.example`. Do not include a
+trailing slash, path, query, credentials, or multiple origins. Leaving it unset
+preserves the existing standalone behavior.
+
+The exception admits only iframe navigation GETs to `/dots` or
+`/dots/<id>` (letters, digits, underscores and hyphens), with the configured
+parent as the Referer origin. Queries and other routes are not granted. Only
+that entry document receives the embed marker and styles that hide the native
+sidebar and duplicate application menu. Native Dot routing, messages, dialogs
+and account gates remain intact; this is not a replacement chat interface.
+
+Keep the parent shell and native Dot server on separate origins and maintain
+their separate authentication and IPC connections. The document exception does
+not authorize the parent to access Dot assets, APIs or WebSockets, share its
+local daemon, or establish a persistent cloud login. HTML responses in embed
+mode add `frame-ancestors 'self' <parent-origin>` as a policy alongside any
+existing CSP, preserving their intersection and allowing native same-origin
+nested frames. Existing isolated-preview restrictions remain in force.
+
+The implementation is in [dot-embed.ts](../src/server/dot-embed.ts); boundary
+checks are in [dot-embed.test.cjs](../tests/dot-embed.test.cjs). Verify initial
+embedding, reload, native navigation, assets and IPC in a real browser: the
+server-side checks alone do not prove iframe behavior or visual acceptance.
+
 ## Cloud and executor acceptance boundaries
 
 ### Computer execution

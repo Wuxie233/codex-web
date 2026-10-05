@@ -17,6 +17,7 @@ import Fastify from "fastify";
 import fastifyStatic from "@fastify/static";
 import { installModuleAliasHook } from "./module";
 import { glob } from "glob";
+import { parseDotEmbedParentOrigin, registerDotEmbed } from "./dot-embed";
 import { rebaseRequestDeadlines } from "./request-deadline";
 import { isIsolatedBrowserRequest, isUserAppNavigation } from "./browser-isolation";
 import { registerBrowserPreviewRoutes } from "./browser-preview";
@@ -425,6 +426,14 @@ function ensureElectronLikeProcessContext(): void {
 async function startIpcBridgeServer(options: ServerOptions): Promise<void> {
   const bridgeState = getIpcMainBridgeState();
   const app = Fastify({ logger: false });
+  registerDotEmbed(app, parseDotEmbedParentOrigin(process.env.CODEX_DOT_EMBED_PARENT_ORIGIN), async () => {
+    const delivery = path.resolve(__dirname, "../../scratch/webview-delivery/index.html");
+    try { return await fs.readFile(delivery, "utf8"); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      return fs.readFile(path.resolve(__dirname, "../../scratch/asar/webview/index.html"), "utf8");
+    }
+  });
   app.addHook("onRequest", async (request, reply) => {
     if (
       isIsolatedBrowserRequest(request.headers) &&
