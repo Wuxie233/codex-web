@@ -31,6 +31,48 @@ function consumeRequestId(consumed, id) {
   if (consumed.has(id)) throw Object.assign(new Error('Dot message outcome unknown; check history and do not replay'), { status: 409 });
   consumed.add(id);
 }
+// One relay owns this ledger; the runtime supervisor serializes relay lifetimes.
+// Hashes retain replay protection without retaining message text or request IDs.
+function createConsumedMessageIds(filename) {
+  if (!filename) return new Set();
+  const failure = () => Object.assign(new Error('Dot message ledger unavailable; sending is disabled'), { status: 503 });
+  let failed = false, consumed;
+  try {
+    if (!require('node:path').isAbsolute(filename)) throw new Error('Absolute ledger path required');
+    let created = false, fd;
+    try { fd = fs.openSync(filename, fs.constants.O_RDWR | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW, 0o600); created = true; }
+    catch (error) { if (error.code !== 'EEXIST') throw error; fd = fs.openSync(filename, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW); }
+    try {
+      if (!fs.fstatSync(fd).isFile()) throw new Error('Regular ledger required');
+      const data = fs.readFileSync(fd, 'utf8');
+      if (data !== '' && !/^(?:[a-f0-9]{64}\n)+$/.test(data)) throw new Error('Invalid ledger');
+      consumed = new Set(data.trim().split('\n').filter(Boolean));
+      if (created) fs.fsyncSync(fd);
+    } finally { fs.closeSync(fd); }
+    if (created) {
+      const directory = fs.openSync(require('node:path').dirname(filename), fs.constants.O_RDONLY | fs.constants.O_DIRECTORY);
+      try { fs.fsyncSync(directory); } finally { fs.closeSync(directory); }
+    }
+  } catch { throw failure(); }
+  const digest = id => crypto.createHash('sha256').update(id).digest('hex');
+  return {
+    has(id) { if (failed) throw failure(); return consumed.has(digest(id)); },
+    add(id) {
+      if (failed) throw failure();
+      const hash = digest(id);
+      // Consume before attempting persistence; any write error disables all sends.
+      consumed.add(hash);
+      try {
+        const fd = fs.openSync(filename, fs.constants.O_WRONLY | fs.constants.O_APPEND | fs.constants.O_NOFOLLOW);
+        try {
+          if (!fs.fstatSync(fd).isFile()) throw new Error('Regular ledger required');
+          fs.writeFileSync(fd, hash + '\n');
+          fs.fsyncSync(fd);
+        } finally { fs.closeSync(fd); }
+      } catch { failed = true; throw failure(); }
+    },
+  };
+}
 function jsonContentType(value) { return typeof value === 'string' && /^application\/json(?:\s*;\s*charset\s*=\s*(?:[a-z0-9._-]+|"[a-z0-9._-]+"))?\s*$/i.test(value); }
 async function readBootstrapBody(req, requireJson = true) {
   if (requireJson && !jsonContentType(req.headers['content-type'])) throw Object.assign(new Error('JSON content type required'), { status: 415 });
@@ -145,7 +187,7 @@ function startBrowserFetch(p) {
 async function main(argv) {
   const options = parseArgs(argv);
   const dotRoomId = configuredRoom(process.env.CODEX_DOT_MESSAGE_ROOM_ID);
-  const consumedMessageIds = new Set();
+  const consumedMessageIds = createConsumedMessageIds(process.env.CODEX_DOT_MESSAGE_LEDGER_FILE);
   const socketPath = options['cdp-socket'];
   const listenPath = options['listen-socket'];
   if (fs.existsSync(listenPath)) throw new Error('Listen socket already exists');
@@ -268,5 +310,5 @@ async function main(argv) {
   }
   process.once('SIGTERM', stop); process.once('SIGINT', stop);
 }
-module.exports = { allowedPath, requestHeaders, responseHeaders, parseArgs, startBrowserFetch, allowedMethod, jsonContentType, readBootstrapBody, configuredRoom, validateMessageBody, consumeRequestId };
+module.exports = { allowedPath, requestHeaders, responseHeaders, parseArgs, startBrowserFetch, allowedMethod, jsonContentType, readBootstrapBody, configuredRoom, validateMessageBody, consumeRequestId, createConsumedMessageIds };
 if (require.main === module) main(process.argv.slice(2)).catch(() => { console.error('Browser relay startup failed'); process.exit(1); });

@@ -174,3 +174,48 @@ test('native page context accepts only a single null or nonempty page_id and pre
     assert.throws(() => validateMessageBody(encodedMessage(body)), error => error.status === 400 && error.message === 'Unsupported Dot page_context shape');
   }
 });
+
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const { createConsumedMessageIds } = require('./dot-browser-fetch-relay.cjs');
+function ledgerFixture(t) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dot-ledger-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  return path.join(root, 'consumed');
+}
+test('durable consumed IDs survive relay restart before any upstream dispatch', t => {
+  const file = ledgerFixture(t); let fetches = 0;
+  const dispatch = ledger => { consumeRequestId(ledger, 'unknown-request-secret'); fetches++; };
+  dispatch(createConsumedMessageIds(file));
+  assert.throws(() => dispatch(createConsumedMessageIds(file)), { status: 409 });
+  assert.equal(fetches, 1);
+  assert.match(fs.readFileSync(file, 'utf8'), /^[a-f0-9]{64}\n$/);
+  assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+});
+test('unreadable or truncated ledger refuses initialization without discarding history', t => {
+  const file = ledgerFixture(t);
+  fs.writeFileSync(file, 'partial-hash');
+  assert.throws(() => createConsumedMessageIds(file), { status: 503 });
+  assert.equal(fs.readFileSync(file, 'utf8'), 'partial-hash');
+  assert.throws(() => createConsumedMessageIds(path.join(file, 'bad')), { status: 503 });
+});
+test('disappearing storage disables dispatch and does not silently recreate ledger', t => {
+  const file = ledgerFixture(t), ledger = createConsumedMessageIds(file); let fetches = 0;
+  fs.unlinkSync(file);
+  const dispatch = id => { consumeRequestId(ledger, id); fetches++; };
+  assert.throws(() => dispatch('first'), { status: 503 });
+  assert.throws(() => dispatch('second'), { status: 503 });
+  assert.equal(fetches, 0); assert.equal(fs.existsSync(file), false);
+});
+test('fsync failure prevents upstream dispatch and latches sending disabled', t => {
+  const file = ledgerFixture(t), ledger = createConsumedMessageIds(file); let fetches = 0;
+  const sync = fs.fsyncSync;
+  fs.fsyncSync = () => { throw new Error('disk failure'); };
+  try {
+    assert.throws(() => { consumeRequestId(ledger, 'unsynced'); fetches++; }, { status: 503 });
+  } finally { fs.fsyncSync = sync; }
+  assert.throws(() => consumeRequestId(ledger, 'other'), { status: 503 });
+  assert.equal(fetches, 0);
+  assert.throws(() => consumeRequestId(createConsumedMessageIds(file), 'unsynced'), { status: 409 });
+});
