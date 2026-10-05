@@ -74,13 +74,107 @@ network-isolated run; these were not renderer page errors. Isolation and source-
 also passed. An offline login screen or successful IPC does not prove
 authenticated Dot use.
 
+## Read-only authenticated transport
+
+The optional `CODEX_BROWSER_FETCH_RELAY_SOCKET` adapter sends GET requests
+under `https://chatgpt.com/backend-api` through a private Unix socket. Its only
+POST exception is the configuration read at exactly
+`/backend-api/wham/statsig/bootstrap`: JSON with an optional charset, at most
+1 MiB of unchanged body bytes, without query parameters or path aliases. The
+official response supplies actual feature evaluations; no gates are overridden. Other
+destinations retain the ordinary fetch path; operating-system network isolation
+is therefore still required. Target mutations are rejected before transmission.
+This is an experimental validation transport, not a general browser proxy.
+
+`scripts/dot-browser-fetch-relay.cjs` requires an existing browser page at exactly
+`https://chatgpt.com/backend-api/tbo/primary`, reachable through a private CDP Unix
+socket. It does not provision a browser, navigate, solve challenges, read an auth
+file, or refresh credentials. Keep the browser in a separately isolated process
+tree with restricted egress. Neither CDP nor the relay socket should be public.
+Create the sockets inside an owner-only directory and supervise both processes:
+
+```sh
+node scripts/dot-browser-fetch-relay.cjs \
+  --cdp-socket /absolute/private/browser-cdp.sock \
+  --listen-socket /absolute/private/fetch.sock
+
+node scripts/dot-readonly-auth.cjs \
+  --auth-file /absolute/existing/codex/auth.json \
+  --listen-socket /absolute/private/auth.sock
+```
+
+The auth broker reads one existing unexpired access token and account ID into
+memory. It does not copy the complete auth file, rotate credentials, or refresh
+the token. Possession of its socket grants access to that token: mount it only
+into the intended isolated validation process. An expired token fails explicitly.
+
+Run the authenticated candidate in another supervised process:
+
+```sh
+python3 scripts/dot-cloud-validation.py \
+  --state /absolute/tmp/dot-cloud-run \
+  --deps /absolute/cache/node_modules \
+  --chromium /absolute/cache/chromium/chrome \
+  --codex /absolute/cache/codex \
+  --relay-socket /absolute/private/fetch.sock \
+  --auth-socket /absolute/private/auth.sock
+```
+
+This harness additionally requires OpenSSL for a temporary namespace-local TLS
+certificate. Inside the namespace only, `chatgpt.com` resolves to its local HTTPS
+relay so native workspace routing retains the real official origin. The host's
+hosts file and trust store remain unchanged. The native CLI uses externally managed authentication in memory;
+the adapter rejects credential refresh, account changes, task execution and
+unapproved RPC methods. This CLI authentication interface is unstable and pinned
+to the inspected `0.160.0` executable. Local configuration changes affect only the
+temporary CODEX_HOME. Never point the wrapper at the shared daemon.
+
+The relay preserves real HTTP status and streamed bytes, strips response headers
+for browser-decoded compression, and cancels requests when consumers disconnect.
+Redirects are deliberately rejected, including requested `follow`, rather than
+forwarding credentials to another origin. Browser-side request leases expire
+within approximately 16 seconds after CDP ownership is lost, even while waiting
+for response headers, an SSE event, or a backpressure acknowledgment.
+
+Observed cloud reads returned real JSON for primary Dot selection and account
+eligibility. The native CLI completed an external-auth account read, and the Dot
+activity stream returned an actual `snapshot` event over HTTP 200 SSE. The
+official Statsig bootstrap returned HTTP 200. A subsequent isolated Desktop
+run opened the real `/dots/<thread-id>` page with the existing Dot message
+history and customization control, without sending a message. This establishes
+authenticated page reading, not message sending or execution. Merely showing
+`Loading…` is not acceptance. Opening an existing room can also attempt a
+read-receipt POST, which this read-only transport intentionally rejects.
+
+The validation runner uses visible onboarding controls when required. Cloud
+onboarding writes remain rejected, so completion through the official local
+error handling is not evidence that account-wide onboarding preferences changed.
+
+The separate durable transport at `codex-cloud-backend.chatgpt.com` is outside
+this relay's allowlist and cannot connect in the isolated harness. The observed
+Dot history page still rendered. This result does not validate durable sessions
+or justify opening an unrestricted WebSocket tunnel.
+
+Visual acceptance remains limited: the Dot header showed a gray avatar. Local
+Orbit modules, worker, data and WASM loaded successfully; a canceled module
+request was not a missing asset. External image requests failed in the network
+namespace. These observations do not establish the gray avatar's exact cause.
+Browser console errors also included rejected telemetry; a readable page does
+not mean all network requests or visual features passed.
+
+After a run, stop the auth broker, relay and task-owned browser, verify no requests
+or descendants remain, and check state artifacts for credential material without
+printing it. An absent `auth.json` alone is insufficient to prove no token was
+logged elsewhere.
+
 ## Cloud and executor acceptance boundaries
 
 - Codex CLI `0.160.0` accepted `exec-server --help`. This proves command
   availability only, not registration, headless cloud execution, or result return.
-- A direct cloud read returned HTTP 403 with an HTML response. That response does
-  not establish account eligibility or prove the absence of the feature. No
-  schema, role, or entitlement overrides are used to manufacture access.
+- Direct Node access encountered a Cloudflare challenge. A real isolated browser
+  subsequently returned authenticated JSON without an interactive challenge.
+  This difference does not require another account login. No schema, role, or
+  entitlement overrides are used to manufacture access.
 - Registration uses `POST /flora/cca/executor`. Its effect on existing computers
   remains unverified, and a precise cleanup path has not been established. Do not
   register against the active account until both are understood. Never use the

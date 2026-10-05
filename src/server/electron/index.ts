@@ -1,3 +1,4 @@
+import { fetchThroughBrowserRelay, isBrowserRelayTarget } from "./browser-fetch-relay.js";
 import { withTranscriptionHeaders } from "./transcription-headers.js";
 
 type StubFunction = (...args: unknown[]) => unknown;
@@ -802,7 +803,10 @@ const net = {
     return true;
   },
   async fetch(input: string | URL, init?: RequestInit): Promise<Response> {
-    // log("net.fetch", [input, init]);
+    const relaySocket = process.env.CODEX_BROWSER_FETCH_RELAY_SOCKET;
+    if (relaySocket && isBrowserRelayTarget(input)) {
+      return fetchThroughBrowserRelay(relaySocket, input, init);
+    }
     if (typeof globalThis.fetch === "function") {
       return globalThis.fetch(
         input as URL | RequestInfo,
