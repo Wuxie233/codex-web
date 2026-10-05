@@ -862,8 +862,19 @@ async function startIpcBridgeServer(options: ServerOptions): Promise<void> {
     recovery.setRateLimitMaxRetries(value),
   );
 
-  const module = require(matches[0]!);
-  module.runMainAppStartup();
+  if (
+    packageJson.version === "26.930.41038" &&
+    packageJson.main === ".vite/build/early-bootstrap.js"
+  ) {
+    // This desktop build owns startup in the official bootstrap. Importing
+    // main and calling it ourselves races the bootstrap's asynchronous handoff.
+    require(path.resolve(__dirname, "../../scratch/asar", packageJson.main));
+  } else {
+    // The pinned 26.901 main bundle does not import its bootstrap; preserve
+    // its existing explicit startup path.
+    const module = require(matches[0]!);
+    module.runMainAppStartup();
+  }
 }
 
 async function main(args: string[]) {
