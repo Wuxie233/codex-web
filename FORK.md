@@ -32,6 +32,11 @@ closes Dot. Its runtime, state, and authentication lifecycle are separate from
 the shared Codex daemon. This optional browser entry does not provision that
 runtime or make an unprotected Dot endpoint safe to publish.
 
+For an independently authenticated deployment, the panel provides a top-level
+login link and a reload button. Complete the child origin's first login in that
+window, then reload the embedded panel. Browser HTTP authentication is scoped
+to the child origin; the parent does not copy or expose its credentials.
+
 ## Shared daemon
 
 Use the upstream `scripts/codex_remote_proxy` with `CODEX_UNIX_SOCKET` pointing to an already-running daemon and `CODEX_CLI_PATH` pointing to that script. The helper requires `websocat`. Run `node src/server/main.js --host 127.0.0.1 --port 8214` directly: the upstream `npm run server` script replaces `CODEX_CLI_PATH`.

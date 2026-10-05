@@ -67,15 +67,37 @@ export function installDotPanel({
         ":scope > iframe[data-dot-panel]",
       );
       if (active && !frame && destination) {
+        const controls = document.createElement("div");
+        controls.dataset.dotPanelControls = "";
+        controls.style.cssText =
+          "position:absolute;inset:0 0 auto;height:36px;display:flex;align-items:center;justify-content:flex-end;gap:16px;padding:0 12px;font-size:12px;background:var(--color-token-main-surface-primary,white);border-bottom:1px solid var(--color-token-border-light,#ddd)";
+        const login = document.createElement("a");
+        login.href = destination.href;
+        login.target = "_blank";
+        login.rel = "noopener noreferrer";
+        login.textContent = "首次登录 / 新窗口打开";
+        login.title = "首次使用请在新窗口完成登录，然后返回并重新加载";
+        const reload = document.createElement("button");
+        reload.type = "button";
+        reload.textContent = "重新加载";
+        reload.addEventListener("click", () => {
+          if (frame) frame.src = destination.href;
+        });
+        controls.append(login, reload);
+        container.appendChild(controls);
         frame = document.createElement("iframe");
         frame.dataset.dotPanel = "";
         frame.title = "Dot";
         frame.src = destination.href;
         frame.style.cssText =
-          "position:absolute;inset:0;width:100%;height:100%;border:0;background:var(--color-token-main-surface-primary,white)";
+          "position:absolute;inset:36px 0 0;width:100%;height:calc(100% - 36px);border:0;background:var(--color-token-main-surface-primary,white)";
         container.appendChild(frame);
       }
       if (frame) frame.hidden = !active;
+      const controls = container.querySelector<HTMLElement>(
+        ":scope > [data-dot-panel-controls]",
+      );
+      if (controls) controls.style.display = active ? "flex" : "none";
     }
   };
 
@@ -126,6 +148,7 @@ export function installDotPanel({
         );
         if (original) restoreOriginal(original);
         element.querySelector(":scope > iframe[data-dot-panel]")?.remove();
+        element.querySelector(":scope > [data-dot-panel-controls]")?.remove();
       };
     },
     onHostNavigation: () => close(false),
