@@ -116,7 +116,6 @@ const disposeRealtimeMedia = realtimeToken
 
 type MemoryNavigationChange = {
   action: "POP" | "PUSH" | "REPLACE";
-  delta: number;
   location: {
     hash: string;
     key: string;
@@ -260,7 +259,8 @@ function handleIncomingMessage(message: MainToRendererMessage): void {
 }
 
 function flushOutboundQueue(): void {
-  if (needsReload || navigator.onLine === false || !socket || socket.readyState !== WebSocket.OPEN) {
+  // An open same-origin socket can remain reachable while the browser reports offline.
+  if (needsReload || !socket || socket.readyState !== WebSocket.OPEN) {
     return;
   }
   for (const message of outboundQueue.splice(0)) {
@@ -542,38 +542,18 @@ const buildFlavor: "prod" | "dev" | "agent" | string = "prod";
 
 Object.assign(globalThis, {
   process: {
-    arch: "arm64",
-    platform: "darwin",
+    arch: "x64",
+    platform: "linux",
     versions: {
       electron: "41.2.0",
     },
   },
 });
 
-electronShim.overrideAdapter = {
-  getGateOverride(evaluation) {
-    if (evaluation.name === "2911712394") {
-      return {
-        ...evaluation,
-        value: true,
-      };
-    }
-
-    if (evaluation.name === "1042620455") {
-      // Remote control (Slingshot).
-      return {
-        ...evaluation,
-        value: true,
-      };
-    }
-
-    return null;
-  },
-};
-
 const initialRoute = mapBrowserPathToInitialRoute(
   window.location.pathname,
   window.location.search,
+  window.location.hash,
 );
 electronShim.initialRoute = realtimeToken
   ? "/avatar-overlay"
@@ -594,7 +574,11 @@ electronShim.onMemoryNavigationChanged = (navigation) => {
     electronShim.closeSidebar?.();
   }
 
-  const browserPath = mapMemoryPathToBrowserPath(path);
+  const browserPath = mapMemoryPathToBrowserPath(
+    path,
+    navigation.location.search,
+    navigation.location.hash,
+  );
   if (browserPath == null) {
     return;
   }
@@ -603,7 +587,10 @@ electronShim.onMemoryNavigationChanged = (navigation) => {
     document.title = browserPath.titleChange;
   }
 
-  if (window.location.pathname === browserPath.path) {
+  if (
+    navigation.action === "REPLACE" ||
+    `${window.location.pathname}${window.location.search}${window.location.hash}` === browserPath.path
+  ) {
     window.history.replaceState(undefined, "", browserPath.path);
     return;
   }

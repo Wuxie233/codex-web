@@ -1,0 +1,53 @@
+--- a/webview/assets/app-initial-39a13ffe060c.js
++++ b/webview/assets/app-initial-39a13ffe060c.js
+@@ -307024,12 +307024,21 @@
+     ? (i = t[1])
+     : ((i = () =>
+         Qie([{ path: `*`, Component: nDa, ErrorBoundary: rDa }], {
+-          initialEntries: r,
++          initialEntries: r ?? [window.__ELECTRON_SHIM__.initialRoute],
+         })),
+       (t[0] = r),
+       (t[1] = i));
+   let [a] = (0, aDa.useState)(i),
+     o;
++  (0, aDa.useEffect)(
++    () => a.subscribe((state) => {
++      window.__ELECTRON_SHIM__.onMemoryNavigationChanged({
++        action: state.historyAction,
++        location: state.location,
++      });
++    }),
++    [a],
++  );
+   t[2] === a
+     ? (o = t[3])
+     : ((o = (0, oDa.jsx)(Tye, { router: a, useTransitions: !1 })),
+--- a/webview/assets/app-shared-30d5903c7657.js
++++ b/webview/assets/app-shared-30d5903c7657.js
+@@ -127142,7 +127142,7 @@
+         }
+       }),
+       (wzt = class {
+-        encodingLevel = `structuredClonable`;
++        encodingLevel = `jsonCompatible`;
+         constructor(e) {
+           ((this.#e = e),
+             e.start(),
+--- a/webview/index.html
++++ b/webview/index.html
+@@ -3,12 +3,14 @@
+   <head>
+     <meta name="referrer" content="origin" />
+     <!-- PROD_BASE_TAG_HERE -->
++    <base href="/" />
+     <meta
+       http-equiv="Content-Security-Policy"
+       content="default-src &#39;none&#39;; img-src &#39;self&#39; app: blob: data: https:; child-src &#39;self&#39; blob: codex-sandbox://*.web-sandbox.oaiusercontent.com codex-sandbox://web-sandbox.oaiusercontent.com https://*.web-sandbox.oaiusercontent.com https://web-sandbox.oaiusercontent.com; frame-src &#39;self&#39; blob: codex-sandbox://*.web-sandbox.oaiusercontent.com codex-sandbox://web-sandbox.oaiusercontent.com https://*.web-sandbox.oaiusercontent.com https://cdn.plaid.com https://cdn.platform.openai.com https://mfe.prod.us-exp-api.experiancs.com https://mfe.uat.us-exp-api.experiancs.com https://web-sandbox.oaiusercontent.com https://www.youtube.com; worker-src &#39;self&#39; blob:; script-src &#39;self&#39; &#39;sha256-Z2/iFzh9VMlVkEOar1f/oSHWwQk3ve1qk/C2WdsC4Xk=&#39; &#39;wasm-unsafe-eval&#39; https://cdn.plaid.com/link/v2/stable/link-initialize.js https://persistent.oaistatic.com/voice/silero-vad-v6/ort-wasm-simd-threaded.30dd851d9c00622940500f71ddd2ff8820c5cb65270816080175b958705385a8.module.js; style-src &#39;self&#39; &#39;unsafe-inline&#39;; font-src &#39;self&#39; data:; media-src &#39;self&#39; app: blob: data: https:; connect-src &#39;self&#39; blob: https://ab.chatgpt.com https://api.mapbox.com https://cdn.openai.com https://events.mapbox.com https://learn.chatgpt.com https://persistent.oaistatic.com https://production.plaid.com https://sandbox.plaid.com wss://*.api.openai.com/ws wss://*.api.openai.org/ws wss://chatgpt-staging.com/backend-api/pages/realtime-broker/ wss://chatgpt.com wss://ws.chatgpt-staging.com wss://ws.chatgpt.com;"
+     />
+     <meta charset="UTF-8" />
+     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
++    <script type="module" src="./assets/preload.js"></script>
+     <title>ChatGPT</title>
+     <style>
+       /* Dependency CSS can load before app.css, so establish Tailwind's layer order here. */

@@ -63,3 +63,35 @@ test("external app entry only permits intentional top-level known app routes", (
     );
   assert.equal(isUserAppNavigation("POST", "/", headers), false);
 });
+
+
+test("Dot deep links preserve the top-level-only navigation boundary", () => {
+  const headers = {
+    "sec-fetch-site": "cross-site",
+    "sec-fetch-dest": "document",
+    "sec-fetch-mode": "navigate",
+    "sec-fetch-user": "?1",
+  };
+  for (const url of [
+    "/dots", "/dots/home", "/dots/new", "/dots/dot_123?view=chat",
+    "/o", "/o/dot-123", "/o/approve", "/o/claim-email",
+  ]) {
+    assert.equal(isUserAppNavigation("GET", url, headers), true, url);
+    for (const override of [
+      { origin: "null" },
+      { "sec-fetch-dest": "iframe" },
+      { "sec-fetch-mode": "websocket" },
+      { "sec-fetch-user": undefined },
+      { "x-codex-remote-browser": "1" },
+    ])
+      assert.equal(isUserAppNavigation("GET", url, { ...headers, ...override }), false, url);
+    assert.equal(isUserAppNavigation("POST", url, headers), false, url);
+    assert.equal(isIsolatedBrowserRequest(headers), true);
+  }
+  for (const url of [
+    "/dots/../__backend/ipc", "/dots/%2e%2e", "/dots/a/b",
+    "/dots/%2f__backend", "/o/a/b", "/dots-extra/home",
+    "/__backend/ipc", "/dots/", "/o//dot-123",
+  ])
+    assert.equal(isUserAppNavigation("GET", url, headers), false, url);
+});

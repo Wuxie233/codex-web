@@ -1,4 +1,8 @@
-export function mapBrowserPathToInitialRoute(pathname: string, search: string) {
+export function mapBrowserPathToInitialRoute(
+  pathname: string,
+  search: string,
+  hash = "",
+) {
   if (pathname === "/share/receive" && search) {
     const params = new URLSearchParams(search);
 
@@ -18,7 +22,7 @@ export function mapBrowserPathToInitialRoute(pathname: string, search: string) {
   }
 
   return {
-    memoryPath: mapBrowserPathToRoute(pathname),
+    memoryPath: `${mapBrowserPathToRoute(pathname)}${search}${hash}`,
   };
 }
 
@@ -32,20 +36,24 @@ function mapBrowserPathToRoute(pathname: string): string {
     }
   }
 
-  return "/";
+  return pathname;
 }
 
-export function mapMemoryPathToBrowserPath(pathname: string) {
+export function mapMemoryPathToBrowserPath(
+  pathname: string,
+  search = "",
+  hash = "",
+) {
   if (pathname === "/") {
-    return { path: "/", titleChange: "Codex" };
+    return { path: `/${search}${hash}`, titleChange: "ChatGPT" };
   }
 
   const match = pathname.match(/^\/local\/([^/?#]+)$/);
   if (!match) {
-    return null;
+    return { path: `${pathname}${search}${hash}` };
   }
 
-  return { path: `/thread/${encodeURIComponent(match[1])}` };
+  return { path: `/thread/${encodeURIComponent(match[1])}${search}${hash}` };
 }
 
 export function dispatchNavigateToRoute(path: string): void {
@@ -60,5 +68,11 @@ export function dispatchNavigateToRoute(path: string): void {
 }
 
 window.addEventListener("popstate", () => {
-  dispatchNavigateToRoute(mapBrowserPathToRoute(window.location.pathname));
+  dispatchNavigateToRoute(
+    mapBrowserPathToInitialRoute(
+      window.location.pathname,
+      window.location.search,
+      window.location.hash,
+    ).memoryPath,
+  );
 });

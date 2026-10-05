@@ -229,3 +229,17 @@ test('foreground observes CLOSING before its close event without losing cleanup'
   old.emit('close'); f.sockets[1].open();
   assert.equal(f.sockets[1].sent.length, 0);
 });
+
+
+test("reachable same-origin socket flushes queued IPC when browser reports offline", () => {
+  const f = fixture(), socket = f.sockets[0];
+  f.context.navigator.onLine = false;
+  vm.runInContext('enqueueMessage({ type: "ipc-renderer-send", channel: "startup", args: [] })', f.context);
+  assert.equal(socket.sent.length, 0);
+  socket.open();
+  assert.equal(socket.sent.filter((message) => message.channel === "startup").length, 1);
+  vm.runInContext('enqueueMessage({ type: "ipc-renderer-send", channel: "next", args: [] })', f.context);
+  assert.equal(socket.sent.filter((message) => message.channel === "next").length, 1);
+  assert.equal(f.sockets.length, 1);
+  assert.equal(f.reloads, 0);
+});

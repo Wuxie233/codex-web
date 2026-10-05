@@ -36,5 +36,9 @@ export function isUserAppNavigation(
   )
     return false;
   const pathname = requestUrl.split("?", 1)[0] ?? "";
-  return pathname === "/" || /^\/thread\/[A-Za-z0-9_-]+$/.test(pathname);
+  return (
+    pathname === "/" ||
+    /^\/thread\/[A-Za-z0-9_-]+$/.test(pathname) ||
+    /^\/(?:dots|o)(?:\/[A-Za-z0-9_-]+)?$/.test(pathname)
+  );
 }

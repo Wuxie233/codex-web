@@ -1,0 +1,21 @@
+--- a/.vite/build/main-vwle0m1s.js
++++ b/.vite/build/main-vwle0m1s.js
+@@ -155509,7 +155509,7 @@
+   return new s.Mt(r, t, n).getRemoteMain();
+ }
+ var Zqe = class {
+-    encodingLevel = `structuredClonable`;
++    encodingLevel = `jsonCompatible`;
+     constructor(e) {
+       ((this.#e = e),
+         e.start(),
+@@ -171555,6 +171555,9 @@
+     updateDockIcon: R,
+     setWindowContext: (e) => {
+       z = e;
++      globalThis.__codexElectronIpcBridge?.setRendererWindowFactory(() =>
++        B.createPrimaryWindow({ show: !1 }),
++      );
+       for (let t of g.BrowserWindow.getAllWindows())
+         !t.isDestroyed() && B.isAppServiceWindow(t) && e.registerWindow(t);
+     },

@@ -898,6 +898,10 @@ const powerSaveBlocker = {
   },
 };
 const screen = {
+  isCursorScreenPointSupported(): boolean {
+    // A remote browser pointer has no native desktop screen coordinates.
+    return false;
+  },
   ...createEmitterStub("screen"),
   getAllDisplays(): Array<{
     id: number;
@@ -972,7 +976,9 @@ function createSessionStub(label: string): {
   removeListener: (event: string, listener: StubListener) => unknown;
   setPermissionCheckHandler: (...args: unknown[]) => void;
   setPermissionRequestHandler: (...args: unknown[]) => void;
+  setPermissionPromptHandler: (...args: unknown[]) => void;
   setPreferredLanguages: (languages: string[]) => void;
+  setWebsiteReportingEnabled: (enabled: boolean) => void;
   webRequest: {
     onBeforeRequest: (...args: unknown[]) => void;
     onBeforeSendHeaders: (...args: unknown[]) => void;
@@ -1025,8 +1031,17 @@ function createSessionStub(label: string): {
     setPermissionRequestHandler(...args: unknown[]): void {
       log(`${label}.setPermissionRequestHandler`, args);
     },
+    setPermissionPromptHandler(...args: unknown[]): void {
+      // This host does not create Electron browser sessions or issue native
+      // permission prompts. Registration cannot grant browser permissions.
+      log(`${label}.setPermissionPromptHandler`, args);
+    },
     setPreferredLanguages(languages: string[]): void {
       log(`${label}.setPreferredLanguages`, [languages]);
+    },
+    setWebsiteReportingEnabled(_enabled: boolean): void {
+      // Website reporting belongs to Chromium sessions. This Node host has no
+      // reporting service; it stays disabled regardless of the desktop setting.
     },
     webRequest: {
       onBeforeRequest(...args: unknown[]): void {
