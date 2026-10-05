@@ -1,4 +1,4 @@
-// Run only through scripts/dot-validation-sandbox.py; never start the app on host.
+// Run only through scripts/dot-cloud-validation.py; never start the app on host.
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const net = require("node:net");
@@ -70,7 +70,8 @@ async function inaccessible(port) {
     rejectedRequests = [],
     errors = [],
     children = [];
-  let browser;
+  let browser, browserEgressBridge;
+  const browserEgressConnections = new Set();
   const certificate = require("node:child_process").spawnSync(
     "/usr/bin/openssl",
     [
@@ -432,7 +433,15 @@ async function inaccessible(port) {
         .split(authForRedaction.accessToken)
         .join("[redacted]")
         .replace(/eyJ[A-Za-z0-9_.-]+/g, "[redacted]")
-        .replace(/Bearer\s+[^\s"']+/gi, "Bearer [redacted]");
+        .replace(/Bearer\s+[^\s"']+/gi, "Bearer [redacted]")
+        .replace(/(?:https?|wss?):\/\/[^\s"'<>]+/gi, (value) => {
+          try {
+            const url = new URL(value);
+            return url.origin + url.pathname;
+          } catch {
+            return "[url]";
+          }
+        });
     const logLines = (stream) => {
       let buffered = "";
       stream.setEncoding("utf8");
@@ -482,9 +491,41 @@ async function inaccessible(port) {
       await delay(200);
     }
     assert(ready, "Backend did not become ready");
+    const browserArgs = ["--no-sandbox"];
+    if (process.env.DOT_BROWSER_EGRESS_SOCKET) {
+      browserEgressBridge = net.createServer((client) => {
+        const upstream = net.connect(process.env.DOT_BROWSER_EGRESS_SOCKET);
+        browserEgressConnections.add(client);
+        browserEgressConnections.add(upstream);
+        const close = () => {
+          client.destroy();
+          upstream.destroy();
+          browserEgressConnections.delete(client);
+          browserEgressConnections.delete(upstream);
+        };
+        client.on("error", close);
+        upstream.on("error", close);
+        client.on("close", close);
+        upstream.on("close", close);
+        client.pipe(upstream);
+        upstream.pipe(client);
+      });
+      await new Promise((resolve, reject) => {
+        browserEgressBridge.once("error", reject);
+        browserEgressBridge.listen(0, "127.0.0.1", resolve);
+      });
+      browserArgs.push(
+        "--proxy-server=http://127.0.0.1:" + browserEgressBridge.address().port,
+        "--proxy-bypass-list=127.0.0.1;localhost",
+      );
+      evidence.browserEgress = {
+        enabled: true,
+        transport: "restricted CONNECT Unix bridge",
+      };
+    }
     browser = await chromium.launch({
       executablePath: process.env.CHROMIUM_PATH,
-      args: ["--no-sandbox"],
+      args: browserArgs,
     });
     const page = await browser.newPage({
       viewport: { width: 1440, height: 1000 },
@@ -496,7 +537,7 @@ async function inaccessible(port) {
     const requestPhases = new WeakMap();
     const safeDiagnostic = (value) =>
       redact(value).replace(
-        /https?:\/\/[^\s"'<>]+/g,
+        /(?:https?|wss?):\/\/[^\s"'<>]+/gi,
         (url) => url.split(/[?#]/)[0],
       );
     page.on("request", (request) => requestPhases.set(request, uiPhase));
@@ -525,12 +566,20 @@ async function inaccessible(port) {
     page.on("websocket", (socket) => {
       const item = {
         path: new URL(socket.url()).pathname,
+        origin: new URL(socket.url()).origin,
+        closed: false,
         sent: 0,
         received: 0,
         types: {},
         frames: [],
       };
       sockets.push(item);
+      socket.on("close", () => {
+        item.closed = true;
+      });
+      socket.on("socketerror", (error) => {
+        item.error = safeDiagnostic(String(error)).slice(0, 500);
+      });
       for (const [event, field] of [
         ["framesent", "sent"],
         ["framereceived", "received"],
@@ -686,6 +735,48 @@ async function inaccessible(port) {
     if (new URL(page.url()).pathname.startsWith("/dots/"))
       await page.waitForTimeout(4000);
     evidence.renderWaitMs = Date.now() - renderStartedAt;
+    const readbackMarker = process.env.DOT_VALIDATION_READBACK_MARKER;
+    if (readbackMarker !== undefined) {
+      evidence.readback = {
+        inputPerformed: false,
+        sendAttemptCount: 0,
+        markerVisible: false,
+      };
+      write("cloud.json", evidence);
+      const reply = page.getByText(readbackMarker, { exact: true }).last();
+      await reply.waitFor({ state: "visible", timeout: 90000 });
+      await page.waitForTimeout(2000);
+      assert(await reply.isVisible(), "Reply did not remain visible");
+      assert(
+        await reply.evaluate(
+          (element) =>
+            !element.closest('[contenteditable="true"],textarea') &&
+            !element.querySelector('[contenteditable="true"],textarea'),
+        ),
+        "Marker belongs to composer",
+      );
+      evidence.readback.outsideComposer = true;
+      evidence.readback.avatarDOM = await page.evaluate(() => ({
+        images: [...document.images].map((element) => ({
+          defaultRing: /BAC1D3/i.test(element.currentSrc || element.src),
+          complete: element.complete,
+          naturalWidth: element.naturalWidth,
+          naturalHeight: element.naturalHeight,
+        })),
+        iframeCount: document.querySelectorAll("iframe").length,
+        canvases: [...document.querySelectorAll("canvas")].map((element) => ({
+          width: element.width,
+          height: element.height,
+        })),
+      }));
+      evidence.readback.markerVisible = true;
+      evidence.readback.marker = readbackMarker;
+      await page.screenshot({
+        path: "/state/confirmed-reply-readback.png",
+        fullPage: true,
+      });
+      write("cloud.json", evidence);
+    }
     evidence.ui = await page.evaluate(() => ({
       path: location.pathname,
       text: document.body.innerText.slice(0, 18000),
@@ -746,8 +837,369 @@ async function inaccessible(port) {
     assert(!evidence.startup.bootstrapFailure, "Desktop bootstrap failed");
     assert(evidence.ui.nonempty, "Dot page has no rendered text");
     assert(evidence.ui.path.startsWith("/dots/"), "Did not reach Dot route");
+    const messageText = process.env.DOT_VALIDATION_MESSAGE_TEXT;
+    if (messageText !== undefined) {
+      const fixedRoom = process.env.CODEX_DOT_MESSAGE_ROOM_ID;
+      assert(
+        fixedRoom && messageText.trim(),
+        "Message opt-in requires room and text",
+      );
+      const readBackendJSON = (path) =>
+        new Promise((resolve, reject) => {
+          const request = http.request(
+            {
+              socketPath: "/run/dot/fetch.sock",
+              path,
+              method: "GET",
+              headers: {
+                authorization: `Bearer ${authForRedaction.accessToken}`,
+                "chatgpt-account-id": authForRedaction.chatgptAccountId,
+              },
+              timeout: 15000,
+            },
+            (response) => {
+              let data = "";
+              response.on("error", reject);
+              response.on("data", (chunk) => {
+                data += chunk;
+              });
+              response.on("end", () => {
+                try {
+                  assert.equal(response.statusCode, 200);
+                  resolve(JSON.parse(data));
+                } catch {
+                  reject(
+                    new Error("Backend read did not return valid success"),
+                  );
+                }
+              });
+            },
+          );
+          request.on("timeout", () =>
+            request.destroy(new Error("Backend read timed out")),
+          );
+          request.on("error", reject);
+          request.end();
+        });
+      const primary = await readBackendJSON("/backend-api/tbo/primary");
+      const selection = primary.selection,
+        profile = primary.profile;
+      const avatarURL =
+        typeof profile?.avatar_url === "string" ? profile.avatar_url : null;
+      let avatarLocation = null;
+      if (avatarURL) {
+        try {
+          const u = new URL(avatarURL);
+          avatarLocation = ["http:", "https:"].includes(u.protocol)
+            ? {
+                origin: u.origin,
+                path: u.pathname.replace(
+                  /\/files\/[^/]+\/raw/,
+                  "/files/:asset/raw",
+                ),
+              }
+            : { scheme: u.protocol };
+        } catch {}
+      }
+      evidence.avatar = {
+        profileType: profile?.avatar_type,
+        hasAvatarId: Boolean(profile?.avatar_id),
+        location: avatarLocation,
+        manifestKeys: profile?.avatar_manifest
+          ? Object.keys(profile.avatar_manifest)
+          : [],
+        snapshotHasAssetPointer: Boolean(
+          profile?.avatar_manifest?.snapshot?.asset_pointer,
+        ),
+        hasUpdatedAt: Boolean(profile?.updated_at),
+        dom: await page.evaluate(() => {
+          const location = (value) => {
+            if (value.startsWith("data:"))
+              return (
+                "data:" +
+                value.slice(
+                  5,
+                  value.indexOf(";") > 0
+                    ? value.indexOf(";")
+                    : value.indexOf(","),
+                )
+              );
+            try {
+              const u = new URL(value);
+              return (
+                u.origin +
+                u.pathname.replace(/\/files\/[^/]+\/raw/, "/files/:asset/raw")
+              );
+            } catch {
+              return null;
+            }
+          };
+          const bounds = (element) => {
+            const r = element.getBoundingClientRect();
+            return { x: r.x, y: r.y, width: r.width, height: r.height };
+          };
+          return {
+            images: [...document.querySelectorAll("img")].map((element) => ({
+              source: location(element.currentSrc || element.src),
+              defaultRing:
+                (element.currentSrc || element.src).startsWith(
+                  "data:image/svg",
+                ) && /BAC1D3/i.test(element.currentSrc || element.src),
+              complete: element.complete,
+              naturalWidth: element.naturalWidth,
+              naturalHeight: element.naturalHeight,
+              bounds: bounds(element),
+            })),
+            frames: [...document.querySelectorAll("iframe")].map((element) => ({
+              source: location(element.src),
+              bounds: bounds(element),
+            })),
+            canvases: [...document.querySelectorAll("canvas")].map(
+              (element) => ({
+                width: element.width,
+                height: element.height,
+                bounds: bounds(element),
+              }),
+            ),
+          };
+        }),
+      };
+
+      const preflight = {
+        selectionAvailable: selection?.available === true,
+        selectionRoomMatches: selection?.messaging_room_id === fixedRoom,
+        profileRoomMatches: profile?.messaging_room_id === fixedRoom,
+        notPaused: profile?.is_paused === false,
+        profileMatches:
+          Boolean(profile?.id) && profile.id === selection?.aeon_id,
+        threadMatches:
+          Boolean(profile?.active_root_thread_id) &&
+          profile.active_root_thread_id === selection?.thread_id,
+        pageMatches: page.url().endsWith("/dots/" + selection?.thread_id),
+      };
+      evidence.message = {
+        preflight,
+        attemptCount: 0,
+        outcome: "not-attempted",
+        realtimeVerified: false,
+        postResponseObserved: false,
+      };
+      write("cloud.json", evidence);
+      assert(
+        Object.values(preflight).every(Boolean),
+        "Existing active Dot room validation failed",
+      );
+      const room = await readBackendJSON(
+        `/backend-api/messaging/rooms/${fixedRoom}`,
+      );
+      assert(Array.isArray(room.members), "Room members missing");
+      const dotMember = room.members.find(
+        (member) => member.aeon_id === selection.aeon_id,
+      );
+      const dotActor = dotMember?.account_user_id;
+      const creatorActor = room.creator_account_user_id;
+      assert(
+        typeof dotActor === "string" && dotActor.length > 0,
+        "Selected Dot member missing",
+      );
+      assert(
+        typeof creatorActor === "string" &&
+          creatorActor.length > 0 &&
+          creatorActor !== dotActor,
+        "Distinct human room creator missing",
+      );
+      evidence.message.actorPreflight = {
+        dotMemberMatched: true,
+        creatorPresent: true,
+        actorsDistinct: true,
+      };
+      const historyPath = `/backend-api/messaging/rooms/${fixedRoom}/messages?limit=20`;
+      const beforeHistory = await readBackendJSON(historyPath);
+      assert(Array.isArray(beforeHistory.items), "History items missing");
+      const baselineIds = new Set(beforeHistory.items.map((item) => item.id));
+      assert(
+        !beforeHistory.items.some(
+          (item) =>
+            item.account_user_id === creatorActor &&
+            item.content?.text === messageText,
+        ),
+        "Message text already exists; never replay",
+      );
+      evidence.message.baselineCount = baselineIds.size;
+      const expectedReply = process.env.DOT_VALIDATION_EXPECTED_REPLY;
+      const editor = page.locator(
+        '[contenteditable="true"]:visible, textarea:visible',
+      );
+      assert.equal(
+        await editor.count(),
+        1,
+        "Expected exactly one visible real composer",
+      );
+      await editor.fill(messageText);
+      const send = page.getByRole("button", { name: /^(Send|Send message)$/i });
+      assert.equal(
+        await send.count(),
+        1,
+        "Expected exactly one visible send button",
+      );
+      assert(await send.isEnabled(), "Send button is disabled");
+      const messageVisibleOutsideComposer = () =>
+        page.evaluate(
+          (text) =>
+            [...document.querySelectorAll("p,span,div")].some(
+              (element) =>
+                element.textContent.trim() === text &&
+                !element.closest('[contenteditable="true"],textarea') &&
+                !element.querySelector('[contenteditable="true"],textarea') &&
+                element.getBoundingClientRect().height > 0,
+            ),
+          messageText,
+        );
+      // Persist the attempt before click. Neither timeout nor unknown permits retry.
+      evidence.message.attemptCount = 1;
+      evidence.message.outcome = "unknown";
+      write("cloud.json", evidence);
+      try {
+        await send.click({ timeout: 10000 });
+      } catch (error) {
+        evidence.message.clickError = safeDiagnostic(error.message).slice(
+          0,
+          500,
+        );
+      }
+      await page.waitForTimeout(5000);
+      evidence.message.visibleAfterClick =
+        await messageVisibleOutsideComposer();
+      await page.screenshot({
+        path: "/state/message-after-click.png",
+        fullPage: true,
+      });
+      // Read-only refresh, even if the click outcome is unknown. Never resend.
+      try {
+        await page.reload({ waitUntil: "domcontentloaded", timeout: 20000 });
+        await waitForStablePage(20000);
+        evidence.message.visibleAfterRefresh =
+          await messageVisibleOutsideComposer();
+        // DOM is observation only; only server history can confirm delivery.
+      } catch (error) {
+        evidence.message.readbackError = safeDiagnostic(error.message).slice(
+          0,
+          500,
+        );
+      }
+      await page.screenshot({
+        path: "/state/message-after-refresh.png",
+        fullPage: true,
+      });
+      const replyText = (raw) => {
+        if (
+          raw.author?.role !== "assistant" ||
+          raw.channel === "analysis" ||
+          raw.metadata?.is_hidden === true ||
+          raw.hidden === true
+        )
+          return null;
+        if (
+          !["text", "multimodal_text"].includes(raw.content?.content_type) ||
+          !Array.isArray(raw.content?.parts)
+        )
+          return null;
+        return raw.content.parts
+          .filter((part) => typeof part === "string")
+          .join("")
+          .trim();
+      };
+      const pollDeadline = Date.now() + 90000;
+      evidence.message.historyPollCount = 0;
+      while (Date.now() < pollDeadline) {
+        try {
+          const history = await readBackendJSON(historyPath);
+          assert(Array.isArray(history.items), "History items missing");
+          evidence.message.historyPollCount++;
+          const fresh = history.items.filter(
+            (item) => !baselineIds.has(item.id),
+          );
+          const submitted = fresh.find(
+            (item) =>
+              item.account_user_id === creatorActor &&
+              item.content?.text === messageText,
+          );
+          if (submitted) {
+            evidence.message.serverMessage = {
+              id: submitted.id,
+              textExact: true,
+            };
+            if (typeof submitted.request_id === "string")
+              evidence.message.serverMessage.requestId = submitted.request_id;
+            evidence.message.outcome = expectedReply
+              ? "message-confirmed-reply-pending"
+              : "message-confirmed";
+          }
+          const rawReplyMatches = (item) =>
+            Array.isArray(item.raw_messages) &&
+            item.raw_messages.some((raw) => replyText(raw) === expectedReply);
+          const memberReplyMatches = (item) =>
+            item.account_user_id === dotActor &&
+            typeof item.content?.text === "string" &&
+            item.content.text.trim() === expectedReply;
+          const reply =
+            expectedReply &&
+            fresh.find(
+              (item) =>
+                item.id !== submitted?.id &&
+                (memberReplyMatches(item) || rawReplyMatches(item)),
+            );
+          if (submitted && reply) {
+            evidence.message.serverReply = {
+              id: reply.id,
+              marker: expectedReply,
+              match: "exact-trimmed",
+              format: memberReplyMatches(reply)
+                ? "dot-member-text"
+                : "raw-assistant-text",
+              actorMatchedDot: reply.account_user_id === dotActor,
+              outerRole: reply.role,
+            };
+            evidence.message.outcome = "reply-confirmed";
+          }
+          evidence.message.newItemShapes = fresh.map((item) => ({
+            dotActor: item.account_user_id === dotActor,
+            creatorActor: item.account_user_id === creatorActor,
+            role: item.role,
+            hasRawMessages: Array.isArray(item.raw_messages),
+            markerExact: memberReplyMatches(item),
+            markerContained: Boolean(
+              expectedReply &&
+              typeof item.content?.text === "string" &&
+              item.content.text.includes(expectedReply),
+            ),
+            rawAssistantMarkerExact: Boolean(
+              expectedReply && rawReplyMatches(item),
+            ),
+            keys: Object.keys(item),
+          }));
+          write("cloud.json", evidence);
+          if (
+            evidence.message.serverMessage &&
+            (!expectedReply || evidence.message.serverReply)
+          )
+            break;
+        } catch (error) {
+          evidence.message.historyReadError = safeDiagnostic(
+            error.message,
+          ).slice(0, 500);
+          write("cloud.json", evidence);
+        }
+        await delay(3000);
+      }
+      evidence.message.historyPollingComplete = true;
+      write("cloud.json", evidence);
+    }
   } finally {
     await browser?.close();
+    for (const socket of browserEgressConnections) socket.destroy();
+    if (browserEgressBridge)
+      await new Promise((resolve) => browserEgressBridge.close(resolve));
     for (const child of children.reverse()) await stop(child);
     relay.closeAllConnections();
     await new Promise((resolve) => relay.close(resolve));

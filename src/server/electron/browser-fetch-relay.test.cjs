@@ -279,3 +279,190 @@ test("Statsig read accepts the 1 MiB boundary and aborts a pending body read", a
   await rejected;
   assert.equal(canceled, true);
 });
+
+function optInRoom(t) {
+  const previous = process.env.CODEX_DOT_MESSAGE_ROOM_ID;
+  process.env.CODEX_DOT_MESSAGE_ROOM_ID = "room-test";
+  t.after(() => {
+    if (previous === undefined) delete process.env.CODEX_DOT_MESSAGE_ROOM_ID;
+    else process.env.CODEX_DOT_MESSAGE_ROOM_ID = previous;
+  });
+}
+const roomUrl = "https://chatgpt.com/backend-api/messaging/rooms/room-test";
+const textPayload = {
+  content: { text: "仅回复验证成功" },
+  request_id: "request-test",
+  idempotency_token: "request-test",
+};
+
+test("room text opt-in preserves raw JSON and security headers, never retries a lost response", async (t) => {
+  optInRoom(t);
+  let calls = 0;
+  const bytes = Buffer.from(
+    JSON.stringify(
+      {
+        ...textPayload,
+        app_attest_challenge: "test-challenge",
+        page_context: { page_id: null },
+      },
+      null,
+      2,
+    ),
+  );
+  const socket = await relay(t, async (req, res) => {
+    calls++;
+    assert.equal(req.url, "/backend-api/messaging/rooms/room-test/messages");
+    assert.equal(
+      req.headers["openai-sentinel-chat-requirements-token"],
+      "test-security",
+    );
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    assert.deepEqual(Buffer.concat(chunks), bytes);
+    req.socket.destroy();
+  });
+  await assert.rejects(
+    fetchThroughBrowserRelay(socket, `${roomUrl}/messages`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "openai-sentinel-chat-requirements-token": "test-security",
+      },
+      body: bytes,
+    }),
+  );
+  assert.equal(calls, 1);
+});
+
+test("room opt-in rejects unrelated writes, URL aliases, and non-text fields before transport", async (t) => {
+  optInRoom(t);
+  const init = {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(textPayload),
+  };
+  for (const suffix of [
+    "/messages?",
+    "/messages/",
+    "/%6dessages",
+    "/read",
+    "/responding_heartbeat",
+    "/files",
+  ]) {
+    await assert.rejects(
+      fetchThroughBrowserRelay("/nonexistent", roomUrl + suffix, init),
+      /only permits/,
+    );
+  }
+  await assert.rejects(
+    fetchThroughBrowserRelay(
+      "/nonexistent",
+      roomUrl.replace("room-test", "other") + "/messages",
+      init,
+    ),
+    /only permits/,
+  );
+  for (const payload of [
+    {
+      ...textPayload,
+      content: { text: "x", attachments: [{ file_id: "file" }] },
+    },
+    { ...textPayload, content: { text: "x", tool: "execute" } },
+    { ...textPayload, page_context: {} },
+    {
+      ...textPayload,
+      page_context: { page_id: "native-page", extra: "reject" },
+    },
+    { ...textPayload, page_context: { page_id: 42 } },
+    { ...textPayload, app_attest_challenge: {} },
+    { ...textPayload, reply_to: { message_id: "x" } },
+    { ...textPayload, client_message_id: "x" },
+    { ...textPayload, idempotency_token: "different" },
+    { ...textPayload, content: { text: " " } },
+  ])
+    await assert.rejects(
+      fetchThroughBrowserRelay("/nonexistent", `${roomUrl}/messages`, {
+        ...init,
+        body: JSON.stringify(payload),
+      }),
+      /Dot /,
+    );
+  delete process.env.CODEX_DOT_MESSAGE_ROOM_ID;
+  await assert.rejects(
+    fetchThroughBrowserRelay("/nonexistent", `${roomUrl}/messages`, init),
+    /only permits/,
+  );
+});
+
+test("room live accepts empty POST and streams until cancellation without requiring JSON", async (t) => {
+  optInRoom(t);
+  let close;
+  const closed = new Promise((resolve) => {
+    close = resolve;
+  });
+  const socket = await relay(t, async (req, res) => {
+    assert.equal(req.method, "POST");
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    assert.equal(Buffer.concat(chunks).length, 0);
+    res.on("close", close);
+    res.writeHead(200, { "content-type": "text/event-stream" });
+    res.write("data: ready\n\n");
+  });
+  const response = await fetchThroughBrowserRelay(socket, `${roomUrl}/live`, {
+    method: "POST",
+  });
+  const reader = response.body.getReader();
+  assert.equal(
+    new TextDecoder().decode((await reader.read()).value),
+    "data: ready\n\n",
+  );
+  await reader.cancel();
+  await closed;
+  await assert.rejects(
+    fetchThroughBrowserRelay("/nonexistent", `${roomUrl}/live`, {
+      method: "POST",
+      body: "{}",
+    }),
+    /empty body/,
+  );
+});
+
+test("native page context permits null and page identifiers, with fixed private rejection reasons", async (t) => {
+  optInRoom(t);
+  const socket = await relay(t, async (req, res) => {
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    const body = JSON.parse(Buffer.concat(chunks));
+    assert.ok(
+      body.page_context.page_id === null ||
+        body.page_context.page_id === "native-page",
+    );
+    res.end("{}");
+  });
+  for (const page_id of [null, "native-page"]) {
+    const response = await fetchThroughBrowserRelay(
+      socket,
+      `${roomUrl}/messages`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ ...textPayload, page_context: { page_id } }),
+      },
+    );
+    assert.equal(response.status, 200);
+    await response.text();
+  }
+  await assert.rejects(
+    fetchThroughBrowserRelay("/nonexistent", `${roomUrl}/messages`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        ...textPayload,
+        page_context: { page_id: null, private: "do-not-log" },
+      }),
+    }),
+    (error) =>
+      error.message === "Dot text message rejected: page_context_shape",
+  );
+});

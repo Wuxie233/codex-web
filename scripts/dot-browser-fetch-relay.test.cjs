@@ -110,3 +110,67 @@ test('browser fetch transmits POST original bytes and rejects other POST targets
   input.url += '?alias=1';
   assert.throws(() => vm.runInNewContext(`(${startBrowserFetch.toString()})(${JSON.stringify(input)})`, context), /Unsupported browser method/);
 });
+
+const { configuredRoom, validateMessageBody, consumeRequestId } = require('./dot-browser-fetch-relay.cjs');
+const plainMessage = () => ({ content: { text: 'hello', attachments: [] }, request_id: 'one-id', idempotency_token: 'one-id', page_context: null, reply_to: null });
+const encodedMessage = body => Buffer.from(JSON.stringify(body)).toString('base64');
+test('Dot writes are opt-in and fixed to exact single-segment room paths', () => {
+  assert.equal(configuredRoom(undefined), null); assert.equal(configuredRoom(''), null);
+  for (const room of ['../room', 'room/a', 'room?x', 'room%2fa', 'room a']) assert.throws(() => configuredRoom(room));
+  const room = configuredRoom('room_1-A');
+  for (const suffix of ['messages', 'live']) {
+    const path = `/backend-api/messaging/rooms/${room}/${suffix}`;
+    assert.equal(allowedMethod('POST', path), false);
+    assert.equal(allowedMethod('POST', path, room), true);
+    for (const altered of [path + '/', path + '?x=1', path.replace(room, 'other'), path.replace(room, 'room%5f1-A')]) assert.equal(allowedMethod('POST', altered, room), false);
+  }
+  for (const path of ['/backend-api/messaging/rooms', '/backend-api/tbo/runtime/resume', '/backend-api/messaging/rooms/room_1-A/authorize']) assert.equal(allowedMethod('POST', path, room), false);
+});
+test('Dot message validation rejects attachments, context, references, unknown fields and invalid UTF-8', () => {
+  assert.equal(validateMessageBody(encodedMessage(plainMessage())), 'one-id');
+  for (const mutate of [b => { b.content.text = ' '; }, b => { b.content.attachments = [{}]; }, b => { b.content.extra = true; }, b => { b.reply_to = 'id'; }, b => { b.page_context = {}; }, b => { b.unknown = 1; }, b => { b.idempotency_token = 'different'; }, b => { b.app_attest_challenge = ''; }]) {
+    const body = plainMessage(); mutate(body); assert.throws(() => validateMessageBody(encodedMessage(body)));
+  }
+  const badUtf8 = Buffer.concat([Buffer.from('{"content":{"text":"'), Buffer.from([0xff]), Buffer.from('"},"request_id":"i","idempotency_token":"i"}')]);
+  assert.throws(() => validateMessageBody(badUtf8.toString('base64')));
+});
+test('live subscription accepts absent content type with zero bytes', async () => {
+  const req = Readable.from([]); req.headers = {};
+  assert.equal(await readBootstrapBody(req, false), '');
+});
+test('concurrent duplicate message IDs cause exactly one browser fetch, including failed-send replay', async () => {
+  const consumed = new Set(), registry = new Map(); let fetches = 0;
+  const context = {
+    location: { origin: 'https://chatgpt.com', href: 'https://chatgpt.com/backend-api/tbo/primary' },
+    AbortController, setInterval, clearInterval, Date, Map, Uint8Array,
+    atob: value => Buffer.from(value, 'base64').toString('binary'), registry,
+    binding() {}, fetch() { fetches++; return Promise.reject(new Error('uncertain disconnect')); },
+  };
+  const input = { id: 'request', url: 'https://chatgpt.com/backend-api/messaging/rooms/room-1/messages', dotRoomId: 'room-1', method: 'POST', bodyBase64: encodedMessage(plainMessage()), headers: { 'content-type': 'application/json' }, redirect: 'error', binding: 'binding', registry: 'registry', leaseMs: 100 };
+  const dispatch = async () => {
+    const id = validateMessageBody(input.bodyBase64);
+    consumeRequestId(consumed, id);
+    vm.runInNewContext(`(${startBrowserFetch.toString()})(${JSON.stringify(input)})`, context);
+  };
+  const results = await Promise.allSettled([dispatch(), dispatch()]);
+  assert.equal(results.filter(result => result.status === 'fulfilled').length, 1);
+  assert.equal(results.find(result => result.status === 'rejected').reason.status, 409);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(fetches, 1); assert.equal(registry.size, 0);
+  await assert.rejects(dispatch(), { status: 409 }); assert.equal(fetches, 1);
+});
+
+test('native page context accepts only a single null or nonempty page_id and preserves the input bytes', async () => {
+  const body = plainMessage(); body.page_context = { page_id: 'native-page-id' };
+  const bytes = Buffer.from('  ' + JSON.stringify(body) + '\n');
+  const stream = Readable.from([bytes]); stream.headers = { 'content-type': 'application/json' };
+  const encoded = await readBootstrapBody(stream);
+  assert.equal(validateMessageBody(encoded), body.request_id);
+  assert.deepEqual(Buffer.from(encoded, 'base64'), bytes);
+  body.page_context = { page_id: null };
+  assert.equal(validateMessageBody(encodedMessage(body)), body.request_id);
+  for (const context of [{}, { page_id: '' }, { page_id: ' ' }, { page_id: 1 }, { page_id: 'id', extra: true }, { other: 'id' }, ['id'], 'private-value']) {
+    body.page_context = context;
+    assert.throws(() => validateMessageBody(encodedMessage(body)), error => error.status === 400 && error.message === 'Unsupported Dot page_context shape');
+  }
+});

@@ -3,9 +3,9 @@ import { Readable } from "node:stream";
 
 const STATSIG_BOOTSTRAP_URL =
   "https://chatgpt.com/backend-api/wham/statsig/bootstrap";
-const MAX_BOOTSTRAP_BYTES = 1024 * 1024;
+const MAX_BODY_BYTES = 1024 * 1024;
 
-async function readBootstrapBody(request: Request): Promise<Buffer> {
+async function readRelayBody(request: Request): Promise<Buffer> {
   const reader = request.body?.getReader();
   if (!reader) return Buffer.alloc(0);
   const chunks: Buffer[] = [];
@@ -22,9 +22,9 @@ async function readBootstrapBody(request: Request): Promise<Buffer> {
       request.signal.throwIfAborted();
       if (done) return Buffer.concat(chunks, length);
       length += value.byteLength;
-      if (length > MAX_BOOTSTRAP_BYTES) {
+      if (length > MAX_BODY_BYTES) {
         await reader.cancel();
-        throw new TypeError("Statsig bootstrap body exceeds 1 MiB");
+        throw new TypeError("Browser relay body exceeds 1 MiB");
       }
       chunks.push(Buffer.from(value));
     }
@@ -34,7 +34,75 @@ async function readBootstrapBody(request: Request): Promise<Buffer> {
   }
 }
 
-/** Read-only experimental transport, including the upstream bootstrap read POST. */
+function validateTextMessage(body: Buffer): void {
+  let value: unknown;
+  try {
+    value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(body));
+  } catch {
+    throw new TypeError("Dot message requires valid UTF-8 JSON");
+  }
+  const object = (v: unknown): v is Record<string, unknown> =>
+    v !== null && typeof v === "object" && !Array.isArray(v);
+  if (
+    !object(value) ||
+    Object.keys(value).some(
+      (key) =>
+        ![
+          "content",
+          "request_id",
+          "idempotency_token",
+          "app_attest_challenge",
+          "page_context",
+          "reply_to",
+        ].includes(key),
+    )
+  ) {
+    throw new TypeError("Dot message contains unsupported fields");
+  }
+  function fail(reason: string): never {
+    // Fixed reason codes only: never include message, identifier, or token values.
+    throw new TypeError(`Dot text message rejected: ${reason}`);
+  }
+  const content = value.content;
+  if (!object(content)) return fail("content_type");
+  if (
+    Object.keys(content).some((key) => !["text", "attachments"].includes(key))
+  )
+    fail("content_fields");
+  if (typeof content.text !== "string" || content.text.trim().length === 0)
+    fail("text_type_or_empty");
+  if (
+    content.attachments !== undefined &&
+    (!Array.isArray(content.attachments) || content.attachments.length !== 0)
+  )
+    fail("attachments_not_empty");
+  if (
+    typeof value.request_id !== "string" ||
+    value.request_id.trim().length === 0
+  )
+    fail("request_id_type_or_empty");
+  if (value.idempotency_token !== value.request_id)
+    fail("idempotency_mismatch");
+  // The native Dot page supplies its current page identifier automatically.
+  if (
+    value.page_context != null &&
+    (!object(value.page_context) ||
+      Object.keys(value.page_context).length !== 1 ||
+      (value.page_context.page_id !== null &&
+        (typeof value.page_context.page_id !== "string" ||
+          value.page_context.page_id.trim().length === 0)))
+  )
+    fail("page_context_shape");
+  if (value.reply_to != null) fail("reply_to_not_supported");
+  if (
+    value.app_attest_challenge !== undefined &&
+    (typeof value.app_attest_challenge !== "string" ||
+      value.app_attest_challenge.length === 0)
+  )
+    fail("attestation_type_or_empty");
+}
+
+/** Read-only by default; one existing room can explicitly opt into text messaging. */
 export function isBrowserRelayTarget(input: string | URL | Request): boolean {
   const url = new URL(input instanceof Request ? input.url : input);
   return (
@@ -55,24 +123,40 @@ export async function fetchThroughBrowserRelay(
     original.method === "POST" &&
     suppliedUrl === STATSIG_BOOTSTRAP_URL &&
     original.url === STATSIG_BOOTSTRAP_URL;
+  const roomId = process.env.CODEX_DOT_MESSAGE_ROOM_ID;
+  const roomBase =
+    roomId && /^[A-Za-z0-9_-]+$/.test(roomId)
+      ? `https://chatgpt.com/backend-api/messaging/rooms/${roomId}`
+      : null;
+  const exactRoomPost = (suffix: string) =>
+    roomBase !== null &&
+    original.method === "POST" &&
+    suppliedUrl === `${roomBase}/${suffix}` &&
+    original.url === suppliedUrl;
+  const textMessage = exactRoomPost("messages");
+  const roomLive = exactRoomPost("live");
   if (
     !isBrowserRelayTarget(original) ||
-    (original.method !== "GET" && !bootstrapRead)
+    (original.method !== "GET" && !bootstrapRead && !textMessage && !roomLive)
   ) {
     throw new TypeError(
-      "Browser relay only permits backend GET or the exact Statsig bootstrap read POST",
+      "Browser relay only permits backend GET, exact Statsig bootstrap, or opted-in room text/live POST",
     );
   }
   if (
-    bootstrapRead &&
+    (bootstrapRead || textMessage) &&
     !/^application\/json(?:\s*;\s*charset\s*=\s*(?:"[^"\r\n]+"|[^;\s]+))?\s*$/i.test(
       original.headers.get("content-type") ?? "",
     )
   ) {
-    throw new TypeError("Statsig bootstrap requires application/json");
+    throw new TypeError("Browser relay JSON POST requires application/json");
   }
   original.signal.throwIfAborted();
-  const body = bootstrapRead ? await readBootstrapBody(original) : undefined;
+  const body =
+    original.method === "POST" ? await readRelayBody(original) : undefined;
+  if (textMessage) validateTextMessage(body!);
+  if (roomLive && body!.length !== 0)
+    throw new TypeError("Dot live subscription requires an empty body");
   original.signal.throwIfAborted();
   const url = new URL(original.url);
   const headers = Object.fromEntries(original.headers);

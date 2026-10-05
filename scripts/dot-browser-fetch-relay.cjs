@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 'use strict';
-// Isolated, read-only HTTP transport through an already authenticated browser page.
+// Isolated browser transport; Dot sends require an explicitly fixed room.
 const fs = require('node:fs');
 const http = require('node:http');
 const net = require('node:net');
@@ -10,10 +10,30 @@ const PAGE = 'https://chatgpt.com/backend-api/tbo/primary';
 const ORIGIN = 'https://chatgpt.com';
 const BOOTSTRAP = '/backend-api/wham/statsig/bootstrap';
 const MAX_BODY = 1024 * 1024;
-function allowedMethod(method, pathname) { return method === 'GET' || (method === 'POST' && pathname === BOOTSTRAP); }
+function configuredRoom(value) {
+  if (value === undefined || value === '') return null;
+  if (!/^[A-Za-z0-9_-]+$/.test(value)) throw new Error('Invalid configured Dot room');
+  return value;
+}
+function dotPath(room, operation) { return room ? `/backend-api/messaging/rooms/${room}/${operation}` : null; }
+function allowedMethod(method, pathname, room = null) { return method === 'GET' || (method === 'POST' && (pathname === BOOTSTRAP || (!!room && [dotPath(room, 'messages'), dotPath(room, 'live')].includes(pathname)))); }
+function validateMessageBody(encoded) {
+  let body;
+  try { body = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(Buffer.from(encoded, 'base64'))); } catch { throw new Error('Invalid Dot message JSON'); }
+  const object = value => value && typeof value === 'object' && !Array.isArray(value);
+  const nonempty = value => typeof value === 'string' && value.trim().length > 0;
+  if (object(body) && 'page_context' in body && body.page_context !== null && (!object(body.page_context) || Object.keys(body.page_context).length !== 1 || !Object.hasOwn(body.page_context, 'page_id') || (body.page_context.page_id !== null && !nonempty(body.page_context.page_id)))) throw Object.assign(new Error('Unsupported Dot page_context shape'), { status: 400 });
+  const keys = ['content', 'request_id', 'idempotency_token', 'app_attest_challenge', 'page_context', 'reply_to'];
+  if (!object(body) || Object.keys(body).some(key => !keys.includes(key)) || !object(body.content) || Object.keys(body.content).some(key => !['text', 'attachments'].includes(key)) || !nonempty(body.content.text) || ('attachments' in body.content && (!Array.isArray(body.content.attachments) || body.content.attachments.length !== 0)) || !nonempty(body.request_id) || body.request_id !== body.idempotency_token || ('app_attest_challenge' in body && (typeof body.app_attest_challenge !== 'string' || body.app_attest_challenge.length === 0)) || ('reply_to' in body && body.reply_to !== null)) throw new Error('Only plain text Dot messages are permitted');
+  return body.request_id;
+}
+function consumeRequestId(consumed, id) {
+  if (consumed.has(id)) throw Object.assign(new Error('Dot message outcome unknown; check history and do not replay'), { status: 409 });
+  consumed.add(id);
+}
 function jsonContentType(value) { return typeof value === 'string' && /^application\/json(?:\s*;\s*charset\s*=\s*(?:[a-z0-9._-]+|"[a-z0-9._-]+"))?\s*$/i.test(value); }
-async function readBootstrapBody(req) {
-  if (!jsonContentType(req.headers['content-type'])) throw Object.assign(new Error('JSON content type required'), { status: 415 });
+async function readBootstrapBody(req, requireJson = true) {
+  if (requireJson && !jsonContentType(req.headers['content-type'])) throw Object.assign(new Error('JSON content type required'), { status: 415 });
   if (Number(req.headers['content-length']) > MAX_BODY) throw Object.assign(new Error('Request body exceeds 1 MiB'), { status: 413 });
   return new Promise((resolve, reject) => {
     let size = 0; const chunks = [];
@@ -63,7 +83,8 @@ function responseHeaders(headers) {
 function startBrowserFetch(p) {
   if (location.origin !== 'https://chatgpt.com' || location.href !== 'https://chatgpt.com/backend-api/tbo/primary') throw new Error('Unexpected page');
   const method = p.method || 'GET';
-  if (method !== 'GET' && !(method === 'POST' && p.url === 'https://chatgpt.com/backend-api/wham/statsig/bootstrap')) throw new Error('Unsupported browser method');
+  const dotBase = p.dotRoomId && /^[A-Za-z0-9_-]+$/.test(p.dotRoomId) ? 'https://chatgpt.com/backend-api/messaging/rooms/' + p.dotRoomId : null;
+  if (method !== 'GET' && !(method === 'POST' && (p.url === 'https://chatgpt.com/backend-api/wham/statsig/bootstrap' || (dotBase && [dotBase + '/messages', dotBase + '/live'].includes(p.url))))) throw new Error('Unsupported browser method');
   const controller = new AbortController();
   let reader = null;
   let leaseTimer;
@@ -103,7 +124,7 @@ function startBrowserFetch(p) {
   });
   (async () => {
     try {
-      const body = method === 'POST' ? Uint8Array.from(atob(p.bodyBase64), c => c.charCodeAt(0)) : undefined;
+      const body = method === 'POST' && p.bodyBase64 !== '' ? Uint8Array.from(atob(p.bodyBase64), c => c.charCodeAt(0)) : undefined;
       const response = await fetch(p.url, { method, body, headers: p.headers, credentials: 'include', redirect: p.redirect, cache: 'no-store', signal: controller.signal });
       if (response.type === 'opaqueredirect') { emit({ type: 'error', reason: 'redirect' }); return; }
       if (response.body) reader = response.body.getReader();
@@ -123,6 +144,8 @@ function startBrowserFetch(p) {
 }
 async function main(argv) {
   const options = parseArgs(argv);
+  const dotRoomId = configuredRoom(process.env.CODEX_DOT_MESSAGE_ROOM_ID);
+  const consumedMessageIds = new Set();
   const socketPath = options['cdp-socket'];
   const listenPath = options['listen-socket'];
   if (fs.existsSync(listenPath)) throw new Error('Listen socket already exists');
@@ -157,7 +180,7 @@ async function main(argv) {
     if (res.headersSent) return res.destroy();
     res.writeHead(status, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' }); res.end(message);
   }
-  function failAll() { clearInterval(heartbeat); ready = false; for (const { res } of requests.values()) failResponse(res, 502, 'Browser context unavailable'); requests.clear(); }
+  function failAll() { clearInterval(heartbeat); ready = false; for (const { res, isMessage } of requests.values()) failResponse(res, 502, isMessage ? 'Dot message outcome unknown; check history and do not replay' : 'Browser context unavailable'); requests.clear(); }
   function browserAbort(id) { if (ready) evaluate(`globalThis[${JSON.stringify(registry)}]?.get(${JSON.stringify(id)})?.abort()`).catch(() => {}); }
   function acknowledge(id) { if (ready && requests.has(id)) evaluate(`globalThis[${JSON.stringify(registry)}]?.get(${JSON.stringify(id)})?.ack?.()`).catch(() => { const req = requests.get(id); if (req) failResponse(req.res, 502, 'Browser acknowledgment failed'); browserAbort(id); requests.delete(id); }); }
   ws.on('message', data => {
@@ -182,7 +205,7 @@ async function main(argv) {
         const chunk = Buffer.from(message.data, 'base64');
         if (res.write(chunk)) acknowledge(message.id); else res.once('drain', () => acknowledge(message.id));
       } else if (message.type === 'done') { requests.delete(message.id); res.end(); }
-      else if (message.type === 'error') { requests.delete(message.id); failResponse(res, 502, message.reason === 'redirect' ? 'Browser relay refuses redirects' : 'Browser fetch failed (redirects are refused)'); }
+      else if (message.type === 'error') { requests.delete(message.id); failResponse(res, 502, request.isMessage ? 'Dot message outcome unknown; check history and do not replay' : message.reason === 'redirect' ? 'Browser relay refuses redirects' : 'Browser fetch failed (redirects are refused)'); }
     } catch { browserAbort(message.id); requests.delete(message.id); failResponse(res, 502, 'Invalid browser response'); }
   });
   ws.on('error', () => {});
@@ -197,24 +220,33 @@ async function main(argv) {
   await evaluate(`globalThis[${JSON.stringify(registry)}] = new Map()`);
   ready = true;
   const server = http.createServer(async (req, res) => {
-    if (!allowedMethod(req.method, req.url)) return failResponse(res, 405, 'Only GET and exact Statsig bootstrap POST are supported');
+    if (!allowedMethod(req.method, req.url, dotRoomId)) return failResponse(res, 405, 'Method or target is not permitted by relay policy');
     if (!allowedPath(req.url)) return failResponse(res, 400, 'Unsupported API path');
     if (!ready) return failResponse(res, 503, 'Browser context unavailable');
     const redirect = req.headers['x-codex-relay-redirect'];
     if (redirect && !['follow', 'error', 'manual'].includes(redirect)) return failResponse(res, 400, 'Invalid redirect mode');
-    let bodyBase64;
+    const isMessage = req.method === 'POST' && req.url === dotPath(dotRoomId, 'messages');
+    const isLive = req.method === 'POST' && req.url === dotPath(dotRoomId, 'live');
+    let bodyBase64, messageId;
     if (req.method === 'POST') {
-      try { bodyBase64 = await readBootstrapBody(req); }
+      try {
+        bodyBase64 = await readBootstrapBody(req, !isLive);
+        if (isLive && bodyBase64 !== '') throw new Error('Dot live subscription requires an empty body');
+        if (isMessage) messageId = validateMessageBody(bodyBase64);
+      }
       catch (error) { return failResponse(res, error.status || 400, error.status ? error.message : 'Request body unavailable'); }
       if (req.aborted || res.destroyed) return;
       if (!ready) return failResponse(res, 503, 'Browser context unavailable');
     }
     const id = crypto.randomBytes(24).toString('hex');
-    requests.set(id, { res });
+    if (isMessage) {
+      try { consumeRequestId(consumedMessageIds, messageId); } catch (error) { return failResponse(res, error.status, error.message); }
+    }
+    requests.set(id, { res, isMessage });
     const cancel = () => { if (requests.delete(id)) browserAbort(id); };
     req.on('aborted', cancel); res.on('close', cancel);
-    const input = JSON.stringify({ id, url: ORIGIN + req.url, method: req.method, bodyBase64, headers: requestHeaders(req.headers), redirect: redirect === 'manual' ? 'manual' : 'error', binding, registry, leaseMs: 15000 });
-    evaluate(`(${startBrowserFetch.toString()})(${input})`).catch(() => { browserAbort(id); requests.delete(id); failResponse(res, 502, 'Browser request could not start'); });
+    const input = JSON.stringify({ id, url: ORIGIN + req.url, method: req.method, bodyBase64, dotRoomId, headers: requestHeaders(req.headers), redirect: redirect === 'manual' ? 'manual' : 'error', binding, registry, leaseMs: 15000 });
+    evaluate(`(${startBrowserFetch.toString()})(${input})`).catch(() => { browserAbort(id); requests.delete(id); failResponse(res, 502, isMessage ? 'Dot message outcome unknown; check history and do not replay' : 'Browser request could not start'); });
   });
   server.on('connection', socket => { connections.add(socket); socket.on('close', () => connections.delete(socket)); });
   server.on('clientError', (_, socket) => socket.destroy());
@@ -236,5 +268,5 @@ async function main(argv) {
   }
   process.once('SIGTERM', stop); process.once('SIGINT', stop);
 }
-module.exports = { allowedPath, requestHeaders, responseHeaders, parseArgs, startBrowserFetch, allowedMethod, jsonContentType, readBootstrapBody };
+module.exports = { allowedPath, requestHeaders, responseHeaders, parseArgs, startBrowserFetch, allowedMethod, jsonContentType, readBootstrapBody, configuredRoom, validateMessageBody, consumeRequestId };
 if (require.main === module) main(process.argv.slice(2)).catch(() => { console.error('Browser relay startup failed'); process.exit(1); });

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run read-only Dot cloud checks in a private filesystem, PID and network namespace."""
+"""Run isolated Dot cloud checks, with explicit opt-in for one message attempt."""
 import argparse
 import json
 import os
@@ -12,6 +12,11 @@ import subprocess
 p = argparse.ArgumentParser(description=__doc__)
 p.add_argument('--relay-socket', type=Path, required=True)
 p.add_argument('--auth-socket', type=Path, required=True)
+p.add_argument('--browser-egress-socket', type=Path, help='Optional restricted browser CONNECT egress')
+p.add_argument('--readback-marker', help='Observe an existing exact reply in the UI without input or sending')
+p.add_argument('--message-room-id', help='Explicit existing Dot room allowed for message verification')
+p.add_argument('--expected-reply', help='Exact assistant reply marker; requires --message-text')
+p.add_argument('--message-text', help='Caller-approved echo text; requires --message-room-id')
 p.add_argument('--skip-account-preflight', action='store_true', help='Reuse earlier account read proof while diagnosing UI')
 p.add_argument('--check', action='store_true', help='Run isolation checks only')
 p.add_argument('--repo', type=Path, default=Path(__file__).resolve().parents[1])
@@ -20,6 +25,16 @@ p.add_argument('--deps', type=Path, required=True)
 p.add_argument('--chromium', type=Path, required=True, help='Chromium executable')
 p.add_argument('--codex', type=Path, required=True)
 a = p.parse_args()
+if a.message_text is not None and not a.message_room_id:
+    p.error("--message-text requires --message-room-id")
+if a.message_text is not None and not a.message_text.strip():
+    p.error("--message-text must not be empty")
+if a.expected_reply is not None and a.message_text is None:
+    p.error("--expected-reply requires --message-text")
+if a.readback_marker is not None and not a.readback_marker.strip():
+    p.error("--readback-marker must not be empty")
+if a.readback_marker is not None and (not a.message_room_id or a.message_text is not None):
+    p.error("--readback-marker requires room and forbids --message-text")
 repo, state, deps, chromium, codex = [x.resolve() for x in [a.repo, a.state, a.deps, a.chromium, a.codex]]
 state.mkdir(parents=True, exist_ok=False)
 for name in ['home', 'codex', 'config', 'data', 'cache', 'workspace']:
@@ -39,6 +54,8 @@ for source, target in [('/usr', '/usr'), ('/lib', '/lib'), ('/lib64', '/lib64'),
                        (str(a.auth_socket.resolve()), '/run/dot/auth.sock'),
                        (str(state / 'hosts'), '/etc/hosts')]:
     args += ['--ro-bind', source, target]
+if a.browser_egress_socket:
+    args += ['--ro-bind', str(a.browser_egress_socket.resolve()), '/run/dot/browser-egress.sock']
 # npm's existing symlink can target outside /app; expose only its dependency tree.
 modules = repo / 'node_modules'
 if modules.is_symlink():
@@ -55,13 +72,23 @@ env = dict(HOME='/state/home', CODEX_HOME='/state/codex', XDG_CONFIG_HOME='/stat
            DOT_VALIDATION_NONCE=nonce, DOT_VALIDATION_HOST_PORT=str(listener.getsockname()[1]),
            DOT_SKIP_ACCOUNT_PREFLIGHT='1' if a.skip_account_preflight else '0',
            DOT_VALIDATION_MODE='isolation' if a.check else 'cloud')
+if a.browser_egress_socket:
+    env["DOT_BROWSER_EGRESS_SOCKET"] = "/run/dot/browser-egress.sock"
+if a.message_room_id:
+    env["CODEX_DOT_MESSAGE_ROOM_ID"] = a.message_room_id
+if a.message_text is not None:
+    env["DOT_VALIDATION_MESSAGE_TEXT"] = a.message_text
+if a.expected_reply is not None:
+    env["DOT_VALIDATION_EXPECTED_REPLY"] = a.expected_reply
+if a.readback_marker is not None:
+    env["DOT_VALIDATION_READBACK_MARKER"] = a.readback_marker
 for key, value in env.items():
     args += ['--setenv', key, value]
 args += ['--', '/usr/local/bin/node', '/app/tests/browser/dot-cloud-validation.cjs']
 try:
     process = subprocess.Popen(args, start_new_session=True)
     try:
-        code = process.wait(timeout=180)
+        code = process.wait(timeout=300 if a.message_text is not None or a.readback_marker is not None else 180)
     except BaseException:
         # Killing the namespace's bwrap supervisor also closes its lifetime pipe.
         # The private PID namespace kernel-reaps every descendant when PID 1 exits.

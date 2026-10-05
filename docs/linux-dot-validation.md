@@ -155,10 +155,13 @@ this relay's allowlist and cannot connect in the isolated harness. The observed
 Dot history page still rendered. This result does not validate durable sessions
 or justify opening an unrestricted WebSocket tunnel.
 
-Visual acceptance remains limited: the Dot header showed a gray avatar. Local
+Visual acceptance remains limited: the Dot header showed a gray ring. Local
 Orbit modules, worker, data and WASM loaded successfully; a canceled module
-request was not a missing asset. External image requests failed in the network
-namespace. These observations do not establish the gray avatar's exact cause.
+request was not a missing asset. External images were blocked without the
+optional egress below. With that egress, inspected avatar PNGs decoded at
+512×512 and the interactive iframe existed, but the ring remained. These
+observations establish neither a missing local resource nor a default SVG
+fallback, and do not prove parity with the native desktop's avatar appearance.
 Browser console errors also included rejected telemetry; a readable page does
 not mean all network requests or visual features passed.
 
@@ -167,7 +170,57 @@ or descendants remain, and check state artifacts for credential material without
 printing it. An absent `auth.json` alone is insufficient to prove no token was
 logged elsewhere.
 
+## Optional fixed-room message validation
+
+The default transport remains read-only. Set `CODEX_DOT_MESSAGE_ROOM_ID` on both
+the relay and candidate server to enable only that existing room's `/messages`
+and `/live` POST endpoints. Messages are limited to plain text with matching
+request/idempotency IDs. Only the native `page_context` shape containing a single
+`page_id` (null or a nonempty string) is accepted; attachments, other contextual
+content and reply references are rejected. The live subscription accepts no body. Original security headers
+and body bytes are preserved; the transport does not manufacture attestation.
+
+The relay consumes each message request ID before contacting the browser.
+Concurrent submissions, upstream failures and native authentication retries
+cannot resend that ID during the relay process's lifetime. This ledger is not
+durable: after a restart, investigate any unknown result through message history
+instead of replaying the request. A failed connection is not proof of rejection.
+
+The sandbox launcher accepts `--message-room-id`, `--message-text` and
+`--expected-reply` for a deliberate single-message check. It first verifies the
+selected existing room and that the Dot is not paused. It does not create a room,
+resume a runtime, grant computer access or register an executor. A message can
+still cause the cloud Dot to act; instructions requesting only an echo are not
+a server-enforced tool restriction.
+
+The authenticated check confirmed one new human message and the Dot's exact
+requested reply in server history. Sender identity is matched against the room
+creator and the member whose `aeon_id` matches the selected Dot: Dot messages can
+have outer `role: "user"`, so that field alone cannot distinguish the authors.
+The earlier rejected attempt never reached the upstream message endpoint; it
+exposed the native `{page_id: null}` context shape now covered by the validator.
+
+For a separate visual readback, use `--readback-marker` with the existing room.
+It is mutually exclusive with `--message-text`: it waits for an existing exact
+reply to become visible and captures a stable screenshot without sending again.
+Server-history success alone does not prove the renderer finished loading.
+A separate fresh readback displayed both the submitted message and exact Dot
+reply after loading, with no input or send action. Native notification WebSocket
+traffic was bidirectional, but this refresh-based check does not isolate live
+notifications as the cause of the reply appearing.
+
+An optional `--browser-egress-socket` preserves the renderer's native notification
+WebSocket and image loading. Start `scripts/dot-browser-egress.cjs --listen-socket
+<private-socket>` separately. Its CONNECT allowlist is limited to port 443 on
+`ws.chatgpt.com`, `persistent.oaistatic.com`, `cdn.auth0.com` and
+`sdmntprwestus.oaiusercontent.com`, through the validation HTTP proxy.
+It rejects the main API host `chatgpt.com`. TLS terminates in the
+browser: this restricts destinations, not encrypted requests or WebSocket frames.
+No production browser or system proxy settings are changed.
+
 ## Cloud and executor acceptance boundaries
+
+### Computer execution
 
 - Codex CLI `0.160.0` accepted `exec-server --help`. This proves command
   availability only, not registration, headless cloud execution, or result return.
@@ -176,9 +229,17 @@ logged elsewhere.
   This difference does not require another account login. No schema, role, or
   entitlement overrides are used to manufacture access.
 - Registration uses `POST /flora/cca/executor`. Its effect on existing computers
-  remains unverified, and a precise cleanup path has not been established. Do not
+  remains unverified, and a precise registry cleanup path has not been established. Do not
   register against the active account until both are understood. Never use the
   unscoped `DELETE /flora/cca/executor` for experiment cleanup.
+- The native client also defines a targeted Dot grant revocation:
+  `POST /tbo/{tbo_id}/computers/{environment_id}/disconnect?expected_thread_id={thread_id}`,
+  without retries. This disconnects one computer from that Dot; it does not prove
+  that the underlying executor registration can be individually deleted.
+- An offline probe of the unmodified native manager verified persistent
+  installation identity, registration request construction and stopping only its
+  own child. HTTP and process dependencies were substituted; no real executor
+  became ready. This is local protocol evidence, not cloud registration proof.
 - `selected_capability_roots` describes skills/plugins, not filesystem access
   permissions. Real execution requires operating-system isolation. Keep the
   local executor disabled for these offline checks; do not force
