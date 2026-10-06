@@ -15,9 +15,11 @@ def stale_socket(path):
  except FileNotFoundError:return
  if not stat.S_ISSOCK(metadata.st_mode) or metadata.st_uid!=os.getuid():raise RuntimeError('Unexpected runtime socket owner or type')
  path.unlink()
-for directory in [state/'transport',state/'browser',state/'app']:
+for directory in [state/'transport',state/'browser',state/'cloud-browser',state/'app']:
  for path in directory.glob('*.sock'):stale_socket(path)
-room=json.loads(a.target_file.read_text())['selection']['messaging_room_id']
+selection=json.loads(a.target_file.read_text())['selection']
+room=selection['messaging_room_id'];cloud_thread=selection['thread_id']
+if not cloud_thread or not all(c.isascii() and (c.isalnum() or c in '_-') for c in cloud_thread):raise RuntimeError('Invalid cloud thread')
 stop=False
 children=[]
 # This ingress is owned by nginx's group; all transports stay owner-only.
@@ -63,7 +65,7 @@ def cleanup():
   try:child.wait(timeout=4)
   except subprocess.TimeoutExpired:os.killpg(child.pid,signal.SIGKILL);child.wait()
  children.clear()
- for directory in [state/'transport',state/'browser',state/'app']:
+ for directory in [state/'transport',state/'browser',state/'cloud-browser',state/'app']:
   for f in directory.glob('*.sock'):f.unlink(missing_ok=True)
 def wait_for(path,timeout=60):
  end=time.time()+timeout
@@ -84,6 +86,10 @@ def transport_health():
  if not browser.get('browserConnected'):raise RuntimeError('Browser disconnected')
  token=private_get(state/'transport/auth.sock','/external-auth')
  selection=private_get(state/'transport/fetch.sock','/backend-api/tbo/primary',{'Authorization':'Bearer '+token['accessToken'],'ChatGPT-Account-Id':token['chatgptAccountId']})
+ if selection.get('selection',{}).get('thread_id')!=cloud_thread:raise RuntimeError('Account Dot cloud thread changed')
+ cloud_browser=json.loads((state/'cloud-browser/status.json').read_text())
+ if not cloud_browser.get('browserConnected'):raise RuntimeError('Cloud browser disconnected')
+ private_get(state/'transport/cloud-fetch.sock','/v1/threads/'+cloud_thread,{'Authorization':'Bearer '+token['accessToken'],'ChatGPT-Account-Id':token['chatgptAccountId'],'X-OpenAI-Product-Sku':'aeon'})
  if selection.get('selection',{}).get('messaging_room_id')!=room:raise RuntimeError('Account Dot selection changed; explicit target reconciliation required')
 def namespace(mounts,env,command):
  args=['/usr/bin/bwrap','--unshare-all','--die-with-parent','--new-session','--clearenv']
@@ -91,7 +97,7 @@ def namespace(mounts,env,command):
  args+=['--proc','/proc','--dev','/dev','--tmpfs','/tmp']
  for k,v in env.items():args+=['--setenv',k,str(v)]
  return args+command
-for d in ['transport','browser','app']:(state/d).mkdir(mode=0o700,exist_ok=True)
+for d in ['transport','browser','cloud-browser','app']:(state/d).mkdir(mode=0o700,exist_ok=True)
 for d in ['home','codex','config','data','cache','workspace']:(state/'app'/d).mkdir(exist_ok=True)
 (state/'hosts').write_text('127.0.0.1 localhost chatgpt.com\n127.0.0.2 codex-cloud-backend.chatgpt.com\n')
 common=[(x,x) for x in ['/usr','/lib','/lib64','/etc/fonts'] if Path(x).exists()]
@@ -99,29 +105,34 @@ try:
  while not stop:
   try:
    fingerprint=auth();status('starting')
-   env=dict(os.environ,DOT_BROWSER_STATE=str(state/'browser'),DOT_SOURCE_AUTH=str(a.auth_file))
-   launch(['/usr/local/bin/node',str(repo/'scripts/dot-runtime-browser.cjs')],env)
-   wait_for(state/'browser/egress.sock')
-   mounts=common+[('/bin','/bin'),('/sbin','/sbin'),('/etc/ssl/certs','/etc/ssl/certs'),('/etc/ld.so.cache','/etc/ld.so.cache'),(a.chromium.resolve().parent,'/browser'),(repo/'scripts/dot-runtime-browser-inside.py','/inside.py')]
-   cmd=namespace(mounts,{'PATH':'/usr/bin:/bin','HOME':'/state/home','DISPLAY':':99','LANG':'C.UTF-8'},['--bind',str(state/'browser'),'/state','--','/usr/bin/python3','/inside.py'])
-   launch(cmd);wait_for(state/'browser/cdp.sock')
-   end=time.time()+90
-   while time.time()<end:
-    if stop:break
-    if any(c.poll() is not None for c in children):raise RuntimeError('Browser exited')
-    try:
-     if json.loads((state/'browser/status.json').read_text()).get('responseStatus')==200:break
-    except (FileNotFoundError,json.JSONDecodeError):pass
-    time.sleep(.5)
-   else:raise RuntimeError('Official browser authentication unavailable')
+   for browser_dir in ['browser','cloud-browser']:
+    env=dict(os.environ,DOT_BROWSER_STATE=str(state/browser_dir),DOT_SOURCE_AUTH=str(a.auth_file))
+    if browser_dir=='cloud-browser':env['CODEX_CLOUD_READ_THREAD_ID']=cloud_thread
+    else:env.pop('CODEX_CLOUD_READ_THREAD_ID',None)
+    launch(['/usr/local/bin/node',str(repo/'scripts/dot-runtime-browser.cjs')],env)
+    wait_for(state/browser_dir/'egress.sock')
+    mounts=common+[('/bin','/bin'),('/sbin','/sbin'),('/etc/ssl/certs','/etc/ssl/certs'),('/etc/ld.so.cache','/etc/ld.so.cache'),(a.chromium.resolve().parent,'/browser'),(repo/'scripts/dot-runtime-browser-inside.py','/inside.py')]
+    cmd=namespace(mounts,{'PATH':'/usr/bin:/bin','HOME':'/state/home','DISPLAY':':99','LANG':'C.UTF-8'},['--bind',str(state/browser_dir),'/state','--','/usr/bin/python3','/inside.py'])
+    launch(cmd);wait_for(state/browser_dir/'cdp.sock')
+    end=time.time()+90
+    while time.time()<end:
+     if stop:break
+     if any(c.poll() is not None for c in children):raise RuntimeError('Browser exited')
+     try:
+      if json.loads((state/browser_dir/'status.json').read_text()).get('responseStatus')==200:break
+     except (FileNotFoundError,json.JSONDecodeError):pass
+     time.sleep(.5)
+    else:raise RuntimeError('Official browser authentication unavailable')
    launch(['/usr/local/bin/node',str(repo/'scripts/dot-readonly-auth.cjs'),'--auth-file',str(a.auth_file),'--listen-socket',str(state/'transport/auth.sock')])
    relay_env=dict(os.environ,CODEX_DOT_MESSAGE_ROOM_ID=room,CODEX_DOT_MESSAGE_LEDGER_FILE=str(state/'message-ledger.jsonl'))
    launch(['/usr/local/bin/node',str(repo/'scripts/dot-browser-fetch-relay.cjs'),'--cdp-socket',str(state/'browser/cdp.sock'),'--listen-socket',str(state/'transport/fetch.sock')],relay_env)
    wait_for(state/'transport/auth.sock');wait_for(state/'transport/fetch.sock')
+   launch(['/usr/local/bin/node',str(repo/'scripts/dot-cloud-fetch-relay.cjs'),'--cdp-socket',str(state/'cloud-browser/cdp.sock'),'--listen-socket',str(state/'transport/cloud-fetch.sock')],dict(os.environ,CODEX_CLOUD_READ_THREAD_ID=cloud_thread))
+   wait_for(state/'transport/cloud-fetch.sock')
    launch(['/usr/local/bin/node',str(repo/'scripts/dot-cloud-egress.cjs'),str(state/'transport/cloud.sock')]);wait_for(state/'transport/cloud.sock')
-   mounts=common+[(repo,'/app'),(a.deps.resolve(),'/deps'),(a.codex.resolve(),'/bin/codex-real'),('/usr/bin/sh','/bin/sh'),('/usr/bin/bash','/bin/bash'),(state/'hosts','/etc/hosts')]+[(state/'transport'/f'{n}.sock',f'/run/dot/{n}.sock') for n in ['auth','fetch','cloud']]
+   mounts=common+[(repo,'/app'),(a.deps.resolve(),'/deps'),(a.codex.resolve(),'/bin/codex-real'),('/usr/bin/sh','/bin/sh'),('/usr/bin/bash','/bin/bash'),(state/'hosts','/etc/hosts')]+[(state/'transport'/f'{n}.sock',f'/run/dot/{n}.sock') for n in ['auth','fetch','cloud','cloud-fetch']]
    modules=repo/'node_modules';mounts.append((a.deps.resolve(),str(modules.resolve()) if modules.is_symlink() else '/app/node_modules'))
-   env={'PATH':'/bin:/usr/local/bin:/usr/bin','NODE_PATH':'/deps','HOME':'/state/home','CODEX_HOME':'/state/codex','XDG_CONFIG_HOME':'/state/config','XDG_DATA_HOME':'/state/data','XDG_CACHE_HOME':'/state/cache','CODEX_CLI_PATH':'/app/scripts/dot-external-auth-cli.cjs','CODEX_TPP_LOCAL_EXECUTOR_CLI_PATH':'/bin/codex-real','CODEX_BROWSER_FETCH_RELAY_SOCKET':'/run/dot/fetch.sock','DOT_AUTH_BASE_URL':'https://127.0.0.1:443/backend-api','CODEX_DOT_MESSAGE_ROOM_ID':room,'CODEX_DOT_EMBED_PARENT_ORIGIN':a.parent_origin}
+   env={'PATH':'/bin:/usr/local/bin:/usr/bin','NODE_PATH':'/deps','HOME':'/state/home','CODEX_HOME':'/state/codex','XDG_CONFIG_HOME':'/state/config','XDG_DATA_HOME':'/state/data','XDG_CACHE_HOME':'/state/cache','CODEX_CLI_PATH':'/app/scripts/dot-external-auth-cli.cjs','CODEX_TPP_LOCAL_EXECUTOR_CLI_PATH':'/bin/codex-real','CODEX_BROWSER_FETCH_RELAY_SOCKET':'/run/dot/fetch.sock','CODEX_CLOUD_READ_RELAY_SOCKET':'/run/dot/cloud-fetch.sock','CODEX_CLOUD_READ_THREAD_ID':cloud_thread,'DOT_AUTH_BASE_URL':'https://127.0.0.1:443/backend-api','CODEX_DOT_MESSAGE_ROOM_ID':room,'CODEX_DOT_EMBED_PARENT_ORIGIN':a.parent_origin}
    launch(namespace(mounts,env,['--tmpfs','/app/.local','--bind',str(state/'app'),'/state','--chdir','/state/workspace','--','/usr/local/bin/node','/app/scripts/dot-runtime-inside.cjs']))
    wait_for(state/'app/ingress.sock')
    for attempt in range(100):

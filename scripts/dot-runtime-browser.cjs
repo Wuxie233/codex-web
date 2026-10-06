@@ -4,13 +4,16 @@ const fs = require('node:fs'), path = require('node:path'), http = require('node
 const { WebSocket } = require('ws');
 const state = process.env.DOT_BROWSER_STATE;
 if (!state || !process.env.DOT_SOURCE_AUTH) throw new Error('Private browser configuration required');
-const targetUrl = 'https://chatgpt.com/backend-api/tbo/primary';
+const cloudThread = process.env.CODEX_CLOUD_READ_THREAD_ID;
+if (cloudThread !== undefined && !/^[A-Za-z0-9_-]+$/.test(cloudThread)) throw new Error('Invalid fixed cloud thread');
+const targetUrl = cloudThread ? 'https://codex-cloud-backend.chatgpt.com/v1/threads/' + cloudThread : 'https://chatgpt.com/backend-api/tbo/primary';
 const sockets = new Set(); let stopping = false;
 const status = { browserConnected: false, tokenAttached: false, responseStatus: null, cfMitigated: null };
 function writeStatus() { fs.writeFileSync(path.join(state, 'status.json'), JSON.stringify(status), {mode: 0o600}); }
 function track(s) { sockets.add(s); s.on('close', () => sockets.delete(s)); s.on('error', () => {}); return s; }
 writeStatus();
 function allowed(host) {
+  if (cloudThread) return ['codex-cloud-backend.chatgpt.com', 'challenges.cloudflare.com'].includes(host);
   return ['chatgpt.com', 'ab.chatgpt.com', 'challenges.cloudflare.com', 'auth.openai.com', 'auth0.openai.com', 'chat.openai.com'].includes(host) || /^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+(?:oaistatic|oaiusercontent)\.com$/.test(host);
 }
 const egressPath = path.join(state, 'egress.sock');
@@ -68,6 +71,7 @@ async function connectBrowser() {
           if (auth && p.request.url === targetUrl && p.request.method === 'GET' && p.resourceType === 'Document' && p.frameId === mainFrame) {
             params.headers = Object.entries(p.request.headers).filter(([k]) => !['authorization','chatgpt-account-id'].includes(k.toLowerCase())).map(([name, value]) => ({ name, value: String(value) }));
             params.headers.push({ name: 'Authorization', value: 'Bearer ' + auth.access_token }, { name: 'ChatGPT-Account-Id', value: auth.account_id });
+            if (cloudThread) params.headers.push({name: 'X-OpenAI-Product-Sku', value: 'aeon'});
             status.tokenAttached = true; writeStatus();
           }
           await send('Fetch.continueRequest', params);
