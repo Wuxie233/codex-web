@@ -219,3 +219,28 @@ test('fsync failure prevents upstream dispatch and latches sending disabled', t 
   assert.equal(fetches, 0);
   assert.throws(() => consumeRequestId(createConsumedMessageIds(file), 'unsynced'), { status: 409 });
 });
+
+test('read receipt and heartbeat policy stays fixed-room and validates native shapes in host and browser', async () => {
+  const {validateReadBody,allowedMethod}=require('./dot-browser-fetch-relay.cjs');
+  const base='/backend-api/messaging/rooms/room-1';
+  const bytes=Buffer.from(' {"last_read_at":"2026-10-06T01:02:03.123456+00:00"}\n');
+  validateReadBody(bytes.toString('base64'));
+  for(const suffix of ['/read','/responding_heartbeat']) {
+    assert.equal(allowedMethod('POST',base+suffix,'room-1'),true);
+    assert.equal(allowedMethod('POST',base+suffix,null),false);
+    for(const path of [base+suffix+'?',base+suffix+'/',base.replace('room-1','other')+suffix])assert.equal(allowedMethod('POST',path,'room-1'),false);
+  }
+  const registry=new Map(), calls=[];
+  const context={location:{origin:'https://chatgpt.com',href:'https://chatgpt.com/backend-api/tbo/primary'},AbortController,setInterval,clearInterval,Date,Map,Uint8Array,TextDecoder,atob:value=>Buffer.from(value,'base64').toString('binary'),registry,binding(payload){const event=JSON.parse(payload);if(event.type==='headers')registry.get(event.id).ack();},fetch(url,options){calls.push([url,options]);return Promise.resolve({type:'basic',status:204,headers:[],body:null});}};
+  const input={id:'read',url:'https://chatgpt.com'+base+'/read',dotRoomId:'room-1',method:'POST',bodyBase64:bytes.toString('base64'),headers:{'content-type':'application/json'},redirect:'error',binding:'binding',registry:'registry',leaseMs:100};
+  const invoke=value=>vm.runInNewContext(`(${startBrowserFetch.toString()})(${JSON.stringify(value)})`,context);
+  invoke(input);await new Promise(resolve=>setImmediate(resolve));assert.deepEqual(Buffer.from(calls[0][1].body),bytes);
+  invoke({...input,id:'heartbeat',url:'https://chatgpt.com'+base+'/responding_heartbeat',bodyBase64:'',headers:{}});await new Promise(resolve=>setImmediate(resolve));assert.equal(calls[1][1].body,undefined);
+  for(const value of [{last_read_at:123},{last_read_at:null},{last_read_at:'invalid'},{last_read_at:''},{last_read_at:'2026-10-06T00:00:00Z',extra:1},[],{}]) {
+    const bodyBase64=Buffer.from(JSON.stringify(value)).toString('base64');
+    assert.throws(()=>validateReadBody(bodyBase64));assert.throws(()=>invoke({...input,bodyBase64}));
+  }
+  assert.throws(()=>invoke({...input,url:'https://chatgpt.com'+base+'/responding_heartbeat'}),/empty body/);
+  assert.throws(()=>invoke({...input,headers:{'content-type':'text/plain'}}),/requires JSON/);
+  assert.equal(calls.length,2);assert.equal(registry.size,0);
+});

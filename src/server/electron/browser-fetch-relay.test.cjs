@@ -341,14 +341,7 @@ test("room opt-in rejects unrelated writes, URL aliases, and non-text fields bef
     headers: { "content-type": "application/json" },
     body: JSON.stringify(textPayload),
   };
-  for (const suffix of [
-    "/messages?",
-    "/messages/",
-    "/%6dessages",
-    "/read",
-    "/responding_heartbeat",
-    "/files",
-  ]) {
+  for (const suffix of ["/messages?", "/messages/", "/%6dessages", "/files"]) {
     await assert.rejects(
       fetchThroughBrowserRelay("/nonexistent", roomUrl + suffix, init),
       /only permits/,
@@ -464,5 +457,95 @@ test("native page context permits null and page identifiers, with fixed private 
     }),
     (error) =>
       error.message === "Dot text message rejected: page_context_shape",
+  );
+});
+
+test("fixed room read receipt preserves timestamp bytes and heartbeat is empty", async (t) => {
+  optInRoom(t);
+  const bytes = ' {"last_read_at":"2026-10-06T01:02:03.123456+00:00"}\n';
+  const seen = [];
+  const socket = await relay(t, async (req, res) => {
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    seen.push([req.url, Buffer.concat(chunks).toString()]);
+    res.writeHead(204);
+    res.end();
+  });
+  assert.equal(
+    (
+      await fetchThroughBrowserRelay(socket, roomUrl + "/read", {
+        method: "POST",
+        headers: { "content-type": "application/json; charset=utf-8" },
+        body: bytes,
+      })
+    ).status,
+    204,
+  );
+  assert.equal(
+    (
+      await fetchThroughBrowserRelay(
+        socket,
+        roomUrl + "/responding_heartbeat",
+        { method: "POST" },
+      )
+    ).status,
+    204,
+  );
+  assert.deepEqual(seen, [
+    [new URL(roomUrl).pathname + "/read", bytes],
+    [new URL(roomUrl).pathname + "/responding_heartbeat", ""],
+  ]);
+  for (const value of [
+    { last_read_at: 123 },
+    { last_read_at: null },
+    { last_read_at: "" },
+    { last_read_at: "invalid" },
+    { last_read_at: "2026-10-06T00:00:00Z", extra: true },
+    [],
+    {},
+  ])
+    await assert.rejects(
+      fetchThroughBrowserRelay("/nonexistent", roomUrl + "/read", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(value),
+      }),
+    );
+  await assert.rejects(
+    fetchThroughBrowserRelay(
+      "/nonexistent",
+      roomUrl + "/responding_heartbeat",
+      { method: "POST", body: "{}" },
+    ),
+    /empty body/,
+  );
+  for (const suffix of [
+    "/read?x=1",
+    "/read/",
+    "/responding_heartbeat?",
+    "/responding_heartbeat/",
+  ])
+    await assert.rejects(
+      fetchThroughBrowserRelay("/nonexistent", roomUrl + suffix, {
+        method: "POST",
+      }),
+      /only permits/,
+    );
+  await assert.rejects(
+    fetchThroughBrowserRelay(
+      "/nonexistent",
+      roomUrl.replace("room-test", "other") + "/read",
+      { method: "POST" },
+    ),
+    /only permits/,
+  );
+  delete process.env.CODEX_DOT_MESSAGE_ROOM_ID;
+  await assert.rejects(
+    fetchThroughBrowserRelay(
+      "/nonexistent",
+      roomUrl + "/responding_heartbeat",
+      { method: "POST" },
+    ),
+    /only permits/,
   );
 });

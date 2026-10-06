@@ -16,7 +16,11 @@ function configuredRoom(value) {
   return value;
 }
 function dotPath(room, operation) { return room ? `/backend-api/messaging/rooms/${room}/${operation}` : null; }
-function allowedMethod(method, pathname, room = null) { return method === 'GET' || (method === 'POST' && (pathname === BOOTSTRAP || (!!room && [dotPath(room, 'messages'), dotPath(room, 'live')].includes(pathname)))); }
+function allowedMethod(method, pathname, room = null) { return method === 'GET' || (method === 'POST' && (pathname === BOOTSTRAP || (!!room && [dotPath(room, 'messages'), dotPath(room, 'live'), dotPath(room, 'read'), dotPath(room, 'responding_heartbeat')].includes(pathname)))); }
+function validateReadBody(encoded) {
+  const body = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(Buffer.from(encoded, 'base64')));
+  if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).length !== 1 || typeof body.last_read_at !== 'string' || !body.last_read_at.trim() || !Number.isFinite(Date.parse(body.last_read_at))) throw new Error('Unsupported Dot read receipt shape');
+}
 function validateMessageBody(encoded) {
   let body;
   try { body = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(Buffer.from(encoded, 'base64'))); } catch { throw new Error('Invalid Dot message JSON'); }
@@ -126,7 +130,17 @@ function startBrowserFetch(p) {
   if (location.origin !== 'https://chatgpt.com' || location.href !== 'https://chatgpt.com/backend-api/tbo/primary') throw new Error('Unexpected page');
   const method = p.method || 'GET';
   const dotBase = p.dotRoomId && /^[A-Za-z0-9_-]+$/.test(p.dotRoomId) ? 'https://chatgpt.com/backend-api/messaging/rooms/' + p.dotRoomId : null;
-  if (method !== 'GET' && !(method === 'POST' && (p.url === 'https://chatgpt.com/backend-api/wham/statsig/bootstrap' || (dotBase && [dotBase + '/messages', dotBase + '/live'].includes(p.url))))) throw new Error('Unsupported browser method');
+  if (method !== 'GET' && !(method === 'POST' && (p.url === 'https://chatgpt.com/backend-api/wham/statsig/bootstrap' || (dotBase && [dotBase + '/messages', dotBase + '/live', dotBase + '/read', dotBase + '/responding_heartbeat'].includes(p.url))))) throw new Error('Unsupported browser method');
+  if (method === 'POST' && dotBase && [dotBase + '/read', dotBase + '/responding_heartbeat'].includes(p.url)) {
+    if (p.url === dotBase + '/responding_heartbeat') {
+      if (p.bodyBase64 !== '') throw new Error('Dot heartbeat requires an empty body');
+    } else {
+      const contentType = Object.entries(p.headers).find(([name]) => name.toLowerCase() === 'content-type')?.[1] || '';
+      if (!/^application\/json(?:\s*;\s*charset\s*=\s*(?:"[^"\r\n]+"|[^;\s]+))?\s*$/i.test(contentType)) throw new Error('Dot read receipt requires JSON');
+      const body = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(Uint8Array.from(atob(p.bodyBase64), c => c.charCodeAt(0))));
+      if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).length !== 1 || typeof body.last_read_at !== 'string' || !body.last_read_at.trim() || !Number.isFinite(Date.parse(body.last_read_at))) throw new Error('Unsupported Dot read receipt shape');
+    }
+  }
   const controller = new AbortController();
   let reader = null;
   let leaseTimer;
@@ -269,11 +283,14 @@ async function main(argv) {
     if (redirect && !['follow', 'error', 'manual'].includes(redirect)) return failResponse(res, 400, 'Invalid redirect mode');
     const isMessage = req.method === 'POST' && req.url === dotPath(dotRoomId, 'messages');
     const isLive = req.method === 'POST' && req.url === dotPath(dotRoomId, 'live');
+    const isRead = req.method === 'POST' && req.url === dotPath(dotRoomId, 'read');
+    const isHeartbeat = req.method === 'POST' && req.url === dotPath(dotRoomId, 'responding_heartbeat');
     let bodyBase64, messageId;
     if (req.method === 'POST') {
       try {
-        bodyBase64 = await readBootstrapBody(req, !isLive);
-        if (isLive && bodyBase64 !== '') throw new Error('Dot live subscription requires an empty body');
+        bodyBase64 = await readBootstrapBody(req, !(isLive || isHeartbeat));
+        if ((isLive || isHeartbeat) && bodyBase64 !== '') throw new Error('Dot live subscription requires an empty body');
+        if (isRead) validateReadBody(bodyBase64);
         if (isMessage) messageId = validateMessageBody(bodyBase64);
       }
       catch (error) { return failResponse(res, error.status || 400, error.status ? error.message : 'Request body unavailable'); }
@@ -310,5 +327,5 @@ async function main(argv) {
   }
   process.once('SIGTERM', stop); process.once('SIGINT', stop);
 }
-module.exports = { allowedPath, requestHeaders, responseHeaders, parseArgs, startBrowserFetch, allowedMethod, jsonContentType, readBootstrapBody, configuredRoom, validateMessageBody, consumeRequestId, createConsumedMessageIds };
+module.exports = { allowedPath, requestHeaders, responseHeaders, parseArgs, startBrowserFetch, allowedMethod, jsonContentType, readBootstrapBody, configuredRoom, validateReadBody, validateMessageBody, consumeRequestId, createConsumedMessageIds };
 if (require.main === module) main(process.argv.slice(2)).catch(() => { console.error('Browser relay startup failed'); process.exit(1); });

@@ -102,6 +102,25 @@ function validateTextMessage(body: Buffer): void {
     fail("attestation_type_or_empty");
 }
 
+function validateReadReceipt(body: Buffer): void {
+  const value = JSON.parse(
+    new TextDecoder("utf-8", { fatal: true }).decode(body),
+  );
+  // Native latestMessage.createdAt is a server timestamp string, not epoch ms.
+  if (
+    !value ||
+    typeof value !== "object" ||
+    Array.isArray(value) ||
+    Object.keys(value).length !== 1 ||
+    typeof value.last_read_at !== "string" ||
+    !value.last_read_at.trim() ||
+    !Number.isFinite(Date.parse(value.last_read_at))
+  )
+    throw new TypeError(
+      "Dot read receipt requires only a valid last_read_at timestamp string",
+    );
+}
+
 /** Read-only by default; one existing room can explicitly opt into text messaging. */
 export function isBrowserRelayTarget(input: string | URL | Request): boolean {
   const url = new URL(input instanceof Request ? input.url : input);
@@ -135,16 +154,23 @@ export async function fetchThroughBrowserRelay(
     original.url === suppliedUrl;
   const textMessage = exactRoomPost("messages");
   const roomLive = exactRoomPost("live");
+  const roomRead = exactRoomPost("read");
+  const roomHeartbeat = exactRoomPost("responding_heartbeat");
   if (
     !isBrowserRelayTarget(original) ||
-    (original.method !== "GET" && !bootstrapRead && !textMessage && !roomLive)
+    (original.method !== "GET" &&
+      !bootstrapRead &&
+      !textMessage &&
+      !roomLive &&
+      !roomRead &&
+      !roomHeartbeat)
   ) {
     throw new TypeError(
-      "Browser relay only permits backend GET, exact Statsig bootstrap, or opted-in room text/live POST",
+      "Browser relay only permits backend GET, exact Statsig bootstrap, or opted-in room text/live/read/heartbeat POST",
     );
   }
   if (
-    (bootstrapRead || textMessage) &&
+    (bootstrapRead || textMessage || roomRead) &&
     !/^application\/json(?:\s*;\s*charset\s*=\s*(?:"[^"\r\n]+"|[^;\s]+))?\s*$/i.test(
       original.headers.get("content-type") ?? "",
     )
@@ -155,8 +181,11 @@ export async function fetchThroughBrowserRelay(
   const body =
     original.method === "POST" ? await readRelayBody(original) : undefined;
   if (textMessage) validateTextMessage(body!);
-  if (roomLive && body!.length !== 0)
-    throw new TypeError("Dot live subscription requires an empty body");
+  if (roomRead) validateReadReceipt(body!);
+  if ((roomLive || roomHeartbeat) && body!.length !== 0)
+    throw new TypeError(
+      "Dot live subscription or responding heartbeat requires an empty body",
+    );
   original.signal.throwIfAborted();
   const url = new URL(original.url);
   const headers = Object.fromEntries(original.headers);
