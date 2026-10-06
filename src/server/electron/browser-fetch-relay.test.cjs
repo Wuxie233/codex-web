@@ -549,3 +549,130 @@ test("fixed room read receipt preserves timestamp bytes and heartbeat is empty",
     /only permits/,
   );
 });
+
+test("separate cloud relay preserves allowed read stream and rejects writes/aliases/foreign threads", async (t) => {
+  const { fetchThroughCloudReadRelay } = require("./browser-fetch-relay.js");
+  const previous = process.env.CODEX_CLOUD_READ_THREAD_ID;
+  process.env.CODEX_CLOUD_READ_THREAD_ID = "thread-existing";
+  t.after(() => {
+    if (previous === undefined) delete process.env.CODEX_CLOUD_READ_THREAD_ID;
+    else process.env.CODEX_CLOUD_READ_THREAD_ID = previous;
+  });
+  const origin = "https://codex-cloud-backend.chatgpt.com";
+  const socket = await relay(t, (req, res) => {
+    assert.equal(req.method, "GET");
+    assert.equal(req.url, "/v1/threads/thread-existing?include=history");
+    assert.equal(req.headers.host, "codex-cloud-backend.chatgpt.com");
+    assert.equal(req.headers["x-codex-relay-redirect"], "error");
+    assert.equal(req.headers.authorization, "Bearer fixture");
+    res.writeHead(206, {
+      "content-type": "application/json",
+      "x-native-status": "retained",
+    });
+    res.end('{"thread":null}');
+  });
+  const response = await fetchThroughCloudReadRelay(
+    socket,
+    origin + "/v1/threads/thread-existing?include=history",
+    { headers: { authorization: "Bearer fixture" } },
+  );
+  assert.equal(response.status, 206);
+  assert.equal(response.headers.get("x-native-status"), "retained");
+  assert.equal(await response.text(), '{"thread":null}');
+  for (const path of [
+    "/v1/threads/other",
+    "/v1/threads/thread-existing/",
+    "/v1/threads/%74hread-existing",
+    "/v1/threads/x/../thread-existing",
+    "/v2/models?",
+    "/v2/models#fragment",
+    "/v1/arbitrary",
+    "/v2/threads/thread-existing",
+    "/v2/models/",
+  ])
+    await assert.rejects(
+      fetchThroughCloudReadRelay("/nonexistent", origin + path),
+      /only exact native GET/,
+    );
+  for (const method of ["POST", "DELETE", "PUT", "HEAD"])
+    await assert.rejects(
+      fetchThroughCloudReadRelay("/nonexistent", origin + "/v2/models", {
+        method,
+      }),
+      /only exact native GET/,
+    );
+  await assert.rejects(
+    fetchThroughCloudReadRelay(
+      "/nonexistent",
+      "https://evil.example/v2/models",
+    ),
+    /only exact native GET/,
+  );
+  delete process.env.CODEX_CLOUD_READ_THREAD_ID;
+  await assert.rejects(
+    fetchThroughCloudReadRelay(
+      "/nonexistent",
+      origin + "/v1/threads/thread-existing",
+    ),
+    /only exact native GET/,
+  );
+});
+
+test("cloud metadata and fixed history reads use the dedicated socket and cancel upstream", async (t) => {
+  const { fetchThroughCloudReadRelay } = require("./browser-fetch-relay.js");
+  const previous = process.env.CODEX_CLOUD_READ_THREAD_ID;
+  process.env.CODEX_CLOUD_READ_THREAD_ID = "thread-existing";
+  t.after(() => {
+    if (previous === undefined) delete process.env.CODEX_CLOUD_READ_THREAD_ID;
+    else process.env.CODEX_CLOUD_READ_THREAD_ID = previous;
+  });
+  const socket = await relay(t, (req, res) => {
+    res.writeHead(200);
+    res.end("native");
+  });
+  for (const path of [
+    "/v2/models",
+    "/v2/collaboration-modes",
+    "/v2/account/rate-limits",
+    "/v2/realtime/voices",
+    "/v2/threads/thread-existing/turns",
+    "/v2/threads/thread-existing/items",
+  ])
+    assert.equal(
+      await (
+        await fetchThroughCloudReadRelay(
+          socket,
+          "https://codex-cloud-backend.chatgpt.com" + path,
+        )
+      ).text(),
+      "native",
+    );
+  let closed;
+  const close = new Promise((resolve) => (closed = resolve));
+  const streaming = await relay(t, (req, res) => {
+    res.on("close", closed);
+    res.write("chunk");
+  });
+  const response = await fetchThroughCloudReadRelay(
+    streaming,
+    "https://codex-cloud-backend.chatgpt.com/v2/models",
+  );
+  await response.body.cancel();
+  await close;
+});
+
+test('cloud opt-in rejects aliases and redirects without falling back to direct fetch',async t=>{
+  const {net}=require('./index.js');
+  const previous=process.env.CODEX_CLOUD_READ_RELAY_SOCKET, previousFetch=globalThis.fetch;
+  const direct=[];globalThis.fetch=async input=>{direct.push(String(input));return new Response('direct');};
+  t.after(()=>{globalThis.fetch=previousFetch;if(previous===undefined)delete process.env.CODEX_CLOUD_READ_RELAY_SOCKET;else process.env.CODEX_CLOUD_READ_RELAY_SOCKET=previous;});
+  const origin='https://codex-cloud-backend.chatgpt.com';
+  delete process.env.CODEX_CLOUD_READ_RELAY_SOCKET;
+  assert.equal(await(await net.fetch(origin+'/v2/models')).text(),'direct');
+  let requests=0;const socket=await relay(t,(req,res)=>{requests++;assert.equal(req.headers['x-codex-relay-redirect'],'error');res.writeHead(302,{location:'https://other.example/'});res.end();});
+  process.env.CODEX_CLOUD_READ_RELAY_SOCKET=socket;
+  await assert.rejects(net.fetch(origin+'/v2/models'),/does not permit redirects/);
+  for(const url of ['https://user@codex-cloud-backend.chatgpt.com/v2/models','https://codex-cloud-backend.chatgpt.com:443/v2/models',origin+'/v2/%6dodels'])await assert.rejects(net.fetch(url));
+  await assert.rejects(net.fetch(origin+'/v2/models',{method:'POST'}),/only exact native GET/);
+  assert.equal(requests,1);assert.deepEqual(direct,[origin+'/v2/models']);
+});

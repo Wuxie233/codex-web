@@ -1,4 +1,4 @@
-import { fetchThroughBrowserRelay, isBrowserRelayTarget } from "./browser-fetch-relay.js";
+import { fetchThroughBrowserRelay, isBrowserRelayTarget, fetchThroughCloudReadRelay, isCloudReadRelayOrigin } from "./browser-fetch-relay.js";
 import { withTranscriptionHeaders } from "./transcription-headers.js";
 
 type StubFunction = (...args: unknown[]) => unknown;
@@ -803,6 +803,10 @@ const net = {
     return true;
   },
   async fetch(input: string | URL, init?: RequestInit): Promise<Response> {
+    const cloudReadSocket = process.env.CODEX_CLOUD_READ_RELAY_SOCKET;
+    if (cloudReadSocket && isCloudReadRelayOrigin(input)) {
+      return fetchThroughCloudReadRelay(cloudReadSocket, input, init);
+    }
     const relaySocket = process.env.CODEX_BROWSER_FETCH_RELAY_SOCKET;
     if (relaySocket && isBrowserRelayTarget(input)) {
       return fetchThroughBrowserRelay(relaySocket, input, init);

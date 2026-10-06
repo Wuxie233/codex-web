@@ -187,10 +187,18 @@ export async function fetchThroughBrowserRelay(
       "Dot live subscription or responding heartbeat requires an empty body",
     );
   original.signal.throwIfAborted();
+  return fetchThroughUnixRelay(socketPath, original, body);
+}
+
+function fetchThroughUnixRelay(
+  socketPath: string,
+  original: Request,
+  body?: Buffer,
+): Promise<Response> {
   const url = new URL(original.url);
   const headers = Object.fromEntries(original.headers);
   // Transport metadata is consumed by the Unix relay, never forwarded upstream.
-  headers.host = "chatgpt.com";
+  headers.host = url.host;
   headers["x-codex-relay-redirect"] = original.redirect;
   return new Promise<Response>((resolve, reject) => {
     const outbound = request({
@@ -253,4 +261,59 @@ export async function fetchThroughBrowserRelay(
     if (original.signal.aborted) abort();
     else outbound.end(body);
   });
+}
+
+const CLOUD_ORIGIN = "https://codex-cloud-backend.chatgpt.com";
+export function isCloudReadRelayOrigin(input: string | URL | Request): boolean {
+  return (
+    new URL(input instanceof Request ? input.url : input).origin ===
+    CLOUD_ORIGIN
+  );
+}
+
+/** Separate, opt-in transport for native ASB reads; never falls back on rejected writes. */
+export async function fetchThroughCloudReadRelay(
+  socketPath: string,
+  input: string | URL | Request,
+  init?: RequestInit,
+): Promise<Response> {
+  const original = new Request(input, init);
+  const raw = input instanceof Request ? input.url : String(input);
+  const url = new URL(original.url);
+  const thread = process.env.CODEX_CLOUD_READ_THREAD_ID;
+  const paths = [
+    "/v2/models",
+    "/v2/collaboration-modes",
+    "/v2/account/rate-limits",
+    "/v2/realtime/voices",
+  ];
+  if (thread && /^[A-Za-z0-9_-]+$/.test(thread))
+    paths.push(
+      `/v1/threads/${thread}`,
+      `/v2/threads/${thread}/turns`,
+      `/v2/threads/${thread}/items`,
+    );
+  if (
+    original.method !== "GET" ||
+    !isCloudReadRelayOrigin(original) ||
+    url.username ||
+    url.password ||
+    url.hash ||
+    !paths.includes(url.pathname) ||
+    raw !== CLOUD_ORIGIN + url.pathname + url.search
+  )
+    throw new TypeError(
+      "Cloud read relay permits only exact native GET routes for the configured thread",
+    );
+  original.signal.throwIfAborted();
+  // Native ASB uses redirect:error. The relay must never follow authenticated redirects.
+  const response = await fetchThroughUnixRelay(
+    socketPath,
+    new Request(original, { redirect: "error" }),
+  );
+  if ([301, 302, 303, 307, 308].includes(response.status)) {
+    await response.body?.cancel();
+    throw new TypeError("Cloud read relay does not permit redirects");
+  }
+  return response;
 }
