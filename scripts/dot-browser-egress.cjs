@@ -4,10 +4,10 @@
 const fs = require('node:fs');
 const net = require('node:net');
 const HOSTS = new Set(['ws.chatgpt.com', 'persistent.oaistatic.com', 'cdn.auth0.com', 'sdmntprwestus.oaiusercontent.com']);
-function parseConnect(header) {
+function parseConnect(header, allowedHosts = HOSTS) {
   const lines = header.toString('latin1').split('\r\n');
-  const match = /^CONNECT ([a-z0-9.]+):443 HTTP\/1\.[01]$/.exec(lines.shift());
-  if (!match || !HOSTS.has(match[1])) throw new Error('Denied CONNECT authority');
+  const match = /^CONNECT ([a-z0-9.-]+):443 HTTP\/1\.[01]$/.exec(lines.shift());
+  if (!match || !allowedHosts.has(match[1])) throw new Error('Denied CONNECT authority');
   let hostSeen = false;
   for (const line of lines) {
     if (!line) continue;
@@ -39,7 +39,7 @@ function readHeader(socket, callback, failure) {
   }
   socket.on('data', data); socket.once('error', error); socket.once('close', close);
 }
-function createEgress(connectUpstream = () => net.connect(7897, '127.0.0.1')) {
+function createEgress(connectUpstream = () => net.connect(7897, '127.0.0.1'), allowedHosts = HOSTS) {
   const active = new Set();
   const server = net.createServer(client => {
     active.add(client); let upstream; let established = false; let rejected = false;
@@ -49,7 +49,7 @@ function createEgress(connectUpstream = () => net.connect(7897, '127.0.0.1')) {
     const reject = status => { if (established) return closeBoth(); if (rejected) return; rejected = true; if (!client.destroyed) client.end(`HTTP/1.1 ${status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n`, () => client.destroy()); upstream?.destroy(); };
     readHeader(client, (header, remainder) => {
       let host;
-      try { host = parseConnect(header); } catch { return reject('403 Forbidden'); }
+      try { host = parseConnect(header, allowedHosts); } catch { return reject('403 Forbidden'); }
       try { upstream = connectUpstream(); } catch { return reject('502 Bad Gateway'); }
       active.add(upstream);
       upstream.on('error', () => reject('502 Bad Gateway'));

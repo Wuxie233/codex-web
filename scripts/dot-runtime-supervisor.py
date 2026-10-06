@@ -93,7 +93,7 @@ def namespace(mounts,env,command):
  return args+command
 for d in ['transport','browser','app']:(state/d).mkdir(mode=0o700,exist_ok=True)
 for d in ['home','codex','config','data','cache','workspace']:(state/'app'/d).mkdir(exist_ok=True)
-(state/'hosts').write_text('127.0.0.1 localhost chatgpt.com\n')
+(state/'hosts').write_text('127.0.0.1 localhost chatgpt.com\n127.0.0.2 codex-cloud-backend.chatgpt.com\n')
 common=[(x,x) for x in ['/usr','/lib','/lib64','/etc/fonts'] if Path(x).exists()]
 try:
  while not stop:
@@ -118,7 +118,8 @@ try:
    relay_env=dict(os.environ,CODEX_DOT_MESSAGE_ROOM_ID=room,CODEX_DOT_MESSAGE_LEDGER_FILE=str(state/'message-ledger.jsonl'))
    launch(['/usr/local/bin/node',str(repo/'scripts/dot-browser-fetch-relay.cjs'),'--cdp-socket',str(state/'browser/cdp.sock'),'--listen-socket',str(state/'transport/fetch.sock')],relay_env)
    wait_for(state/'transport/auth.sock');wait_for(state/'transport/fetch.sock')
-   mounts=common+[(repo,'/app'),(a.deps.resolve(),'/deps'),(a.codex.resolve(),'/bin/codex-real'),('/usr/bin/sh','/bin/sh'),('/usr/bin/bash','/bin/bash'),(state/'hosts','/etc/hosts')]+[(state/'transport'/f'{n}.sock',f'/run/dot/{n}.sock') for n in ['auth','fetch']]
+   launch(['/usr/local/bin/node',str(repo/'scripts/dot-cloud-egress.cjs'),str(state/'transport/cloud.sock')]);wait_for(state/'transport/cloud.sock')
+   mounts=common+[(repo,'/app'),(a.deps.resolve(),'/deps'),(a.codex.resolve(),'/bin/codex-real'),('/usr/bin/sh','/bin/sh'),('/usr/bin/bash','/bin/bash'),(state/'hosts','/etc/hosts')]+[(state/'transport'/f'{n}.sock',f'/run/dot/{n}.sock') for n in ['auth','fetch','cloud']]
    modules=repo/'node_modules';mounts.append((a.deps.resolve(),str(modules.resolve()) if modules.is_symlink() else '/app/node_modules'))
    env={'PATH':'/bin:/usr/local/bin:/usr/bin','NODE_PATH':'/deps','HOME':'/state/home','CODEX_HOME':'/state/codex','XDG_CONFIG_HOME':'/state/config','XDG_DATA_HOME':'/state/data','XDG_CACHE_HOME':'/state/cache','CODEX_CLI_PATH':'/app/scripts/dot-external-auth-cli.cjs','CODEX_TPP_LOCAL_EXECUTOR_CLI_PATH':'/bin/codex-real','CODEX_BROWSER_FETCH_RELAY_SOCKET':'/run/dot/fetch.sock','DOT_AUTH_BASE_URL':'https://127.0.0.1:443/backend-api','CODEX_DOT_MESSAGE_ROOM_ID':room,'CODEX_DOT_EMBED_PARENT_ORIGIN':a.parent_origin}
    launch(namespace(mounts,env,['--tmpfs','/app/.local','--bind',str(state/'app'),'/state','--chdir','/state/workspace','--','/usr/local/bin/node','/app/scripts/dot-runtime-inside.cjs']))
