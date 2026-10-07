@@ -64,18 +64,21 @@ ChatGPT cloud capabilities (including inherited project/chat/cloud-automation en
 ## Browser connection recovery
 
 A resumable page keeps its renderer and MessagePorts across transport loss for
-10 minutes. The server retains an ordered, acknowledged event log (at most
+one hour. The server retains an ordered, acknowledged event log (at most
 16 MiB or 50,000 events per page); reconnect replays missing events before the
-browser flushes newly queued requests. Already-sent operations are never replayed.
-Received invokes still running on the server remain pending after reconnect.
-Interrupted invokes absent from both replay and server pending calls require a
-cold start because Desktop RPC initialization may be incomplete; they are never
-resent.
+browser flushes newly queued requests. Client messages carry `bridgeClientSequence`
+and remain in memory until acknowledged. The server records receipt before
+dispatch, ignores duplicate sequences, and includes its receipt boundary in the
+resume handshake. Only messages beyond that boundary are resent, before new work;
+accepted operations are never repeated. Invokes and MessagePorts remain pending
+across transport loss, including requests lost before server receipt.
 Page unload disposes the renderer; expired sessions, missing history and server
 restarts fall back to a full reload. Browser-discarded pages still need a cold
 start. Voice renderers retain their separate close-on-disconnect lifecycle.
 
 The protocol is opt-in, so existing cached clients keep their recovery path.
+Older servers without client receipt acknowledgements retain the cold-start
+fallback for interrupted invokes absent from replay and server pending calls.
 Resume tokens belong to one page and stay in memory; all reconnects still pass
 through the deployment's HTTP/WebSocket authentication boundary.
 

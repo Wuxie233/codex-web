@@ -173,6 +173,10 @@ let socket: WebSocket | null = null;
 let needsReload = false;
 let resumeToken: string | null = null;
 let receivedSequence = 0;
+let clientSequence = 0;
+let clientAcknowledgedSequence = 0;
+let clientDeliverySupported: boolean | null = realtimeToken ? false : null;
+const unacknowledgedMessages = new Map<number, string>();
 const interruptedRequests = new Set<string>();
 let reconnectTimeoutId: number | null = null;
 const outboundQueue: RendererToMainMessage[] = [];
@@ -267,8 +271,26 @@ function flushOutboundQueue(): void {
     return;
   }
   for (const message of outboundQueue.splice(0)) {
-    socket.send(JSON.stringify({ ...message, bridgeSentAtMs: Date.now() }));
+    // Retain initial messages as well: they may leave before bridge-session.
+    const sequence = clientDeliverySupported !== false ? ++clientSequence : undefined;
+    const payload = JSON.stringify({ ...message, bridgeSentAtMs: Date.now(), bridgeClientSequence: sequence });
+    if (sequence !== undefined) unacknowledgedMessages.set(sequence, payload);
+    socket.send(payload);
   }
+}
+
+function acknowledgeClientMessages(sequence: unknown): boolean {
+  if (typeof sequence !== "number" || !Number.isSafeInteger(sequence) ||
+      sequence < clientAcknowledgedSequence || sequence > clientSequence) {
+    window.location.reload();
+    return false;
+  }
+  clientAcknowledgedSequence = sequence;
+  for (const id of unacknowledgedMessages.keys()) {
+    if (id > sequence) break;
+    unacknowledgedMessages.delete(id);
+  }
+  return true;
 }
 
 function scheduleReconnect(): void {
@@ -314,17 +336,32 @@ function ensureSocket(): void {
       let message = JSON.parse(String(event.data));
       if (message.type === "bridge-session") {
         resumeToken = message.token;
+        clientDeliverySupported = message.clientSequence !== undefined;
+        if (clientDeliverySupported) acknowledgeClientMessages(message.clientSequence);
+        else unacknowledgedMessages.clear();
+        return;
+      }
+      if (message.type === "bridge-client-ack") {
+        if (clientDeliverySupported) acknowledgeClientMessages(message.sequence);
         return;
       }
       if (message.type === "bridge-resumed") {
-        // A lost invoke can leave Desktop's RPC exports incomplete. Do not
-        // replay the operation or reject into an unrecoverable renderer.
-        const stillRunning = new Set<string>(message.pendingRequests);
-        for (const id of interruptedRequests) {
-          if (!stillRunning.has(id) &&
-              (pendingInvokes.has(id) || pendingDirectoryEntries.has(id))) {
-            window.location.reload();
-            return;
+        if (clientDeliverySupported) {
+          if (!acknowledgeClientMessages(message.clientSequence)) return;
+          // Resume confirms the exact receipt boundary. Send only operations
+          // absent from this renderer, in their original order and with IDs.
+          for (const payload of unacknowledgedMessages.values()) {
+            current.send(JSON.stringify({ ...JSON.parse(payload), bridgeSentAtMs: Date.now() }));
+          }
+        } else {
+          // Older servers cannot distinguish lost requests from accepted work.
+          const stillRunning = new Set<string>(message.pendingRequests);
+          for (const id of interruptedRequests) {
+            if (!stillRunning.has(id) &&
+                (pendingInvokes.has(id) || pendingDirectoryEntries.has(id))) {
+              window.location.reload();
+              return;
+            }
           }
         }
         interruptedRequests.clear();
@@ -379,7 +416,7 @@ function disconnectSocket(current: WebSocket): void {
   closeRealtimeWindows();
   disposeRealtimeMedia?.();
   needsReload = true;
-  if (resumeToken) {
+  if (resumeToken && !clientDeliverySupported) {
     const unsent = new Set(outboundQueue.flatMap((message) =>
       "requestId" in message ? [message.requestId] : []));
     for (const id of pendingInvokes.keys()) if (!unsent.has(id)) interruptedRequests.add(id);
@@ -392,6 +429,7 @@ function disconnectSocket(current: WebSocket): void {
     for (const pending of pendingDirectoryEntries.values()) pending.reject(error);
     pendingDirectoryEntries.clear();
     outboundQueue.length = 0;
+    unacknowledgedMessages.clear();
     for (const port of messagePorts.values()) port.close();
     messagePorts.clear();
   }

@@ -121,9 +121,13 @@ microphone tests do not establish physical-device or mobile-browser acceptance.
 
 The browser probes IPC transport health on foreground/online return and while
 visible. Missing replies expire after 4 seconds; connection attempts after
-8 seconds. Hidden pages defer retries until return. A disconnected renderer still
-requires a reload because its native MessagePorts cannot be reused. Recovery uses
-`recoveryProbe=1` to check server readiness without allocating a throwaway renderer.
-Never replay uncertain writes; reject new invokes while recovery is pending.
+8 seconds. Hidden pages defer retries until return. Resumable pages keep their
+renderer and MessagePorts for up to one hour after transport loss. Server events
+are replayed from the browser's last received sequence before queued work resumes.
+Client messages also carry a sequence: the server confirms receipt and suppresses
+duplicates, so only messages beyond its confirmed receipt boundary are resent.
+See `FORK.md` for replay limits and compatibility. Expired or unavailable sessions
+still require a reload; legacy recovery uses `recoveryProbe=1` without allocating
+a throwaway renderer. Never replay uncertain writes into a new renderer.
 Verify with `node --test tests/connection-recovery.test.cjs` and a real mobile
 background/foreground cycle; simulated timers do not establish device latency.
