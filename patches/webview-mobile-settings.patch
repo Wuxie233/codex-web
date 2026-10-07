@@ -1,0 +1,59 @@
+--- a/webview/assets/app-initial-236e1501144c.js
++++ b/webview/assets/app-initial-236e1501144c.js
+@@ -454505,7 +454505,12 @@
+   let T;
+   return (
+     t[23] !== c || t[24] !== y || t[25] !== b || t[26] !== w
+-      ? ((T = (0, c5.jsxs)(`div`, { id: c, className: y, children: [b, w] })),
++      ? ((T = (0, c5.jsxs)(`div`, {
++          id: c,
++          className: y,
++          "data-codex-web-settings-row": p,
++          children: [b, w],
++        })),
+         (t[23] = c),
+         (t[24] = y),
+         (t[25] = b),
+--- a/webview/index.html
++++ b/webview/index.html
+@@ -139,6 +139,40 @@
+       .main-surface {
+         --spacing-token-safe-header-left: 0px;
+       }
++      @media (max-width: 768px) {
++        .p-panel > .mx-auto:has([data-codex-web-settings-row]) {
++          min-width: 0;
++        }
++
++        [data-codex-web-settings-row="default"] {
++          min-width: 0;
++          gap: 12px;
++        }
++
++        [data-codex-web-settings-row="default"] > :last-child {
++          min-width: 0;
++          max-width: 100%;
++        }
++
++        [data-codex-web-settings-row="default"]:not(
++          :has(> :last-child > [role="switch"])
++        ) {
++          flex-direction: column;
++          align-items: stretch;
++          gap: 8px;
++        }
++
++        [data-codex-web-settings-row="default"]:not(
++          :has(> :last-child > [role="switch"])
++        ) > :last-child {
++          width: 100%;
++        }
++
++        [data-codex-web-settings-row="default"] > :last-child > * {
++          min-width: 0;
++          max-width: 100%;
++        }
++      }
+     </style>
+     <script
+       type="module"

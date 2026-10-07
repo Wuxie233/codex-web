@@ -101,3 +101,4 @@ patch --batch --forward --fuzz=0 --strip 1 --directory scratch/asar < patches/ma
 patch --batch --forward --fuzz=0 --strip 1 --directory scratch/asar < patches/webview-visualization-sandbox.patch
 
 patch --batch --forward --fuzz=0 --strip 1 --directory scratch/asar < patches/dot-shell-panel.patch
+patch --batch --forward --fuzz=0 --strip 1 --directory scratch/asar < patches/webview-mobile-settings.patch
