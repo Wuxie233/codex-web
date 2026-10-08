@@ -1,7 +1,7 @@
 export const RATE_LIMIT_CONTINUATION =
   "上一轮因请求限流（HTTP 429）而中断，请继续之前未完成的工作。先核对当前进度和已有执行结果，再从中断处接着处理，避免重复执行已完成的操作。";
 export const RATE_LIMIT_DELAYS = [30000, 60000, 120000] as const;
-export type RecoveryReason = "quota" | "rateLimit";
+export type RecoveryReason = "quota" | "rateLimit" | "accountSwitch";
 // Walk structured protocol errors and their textual HTTP diagnostics. Quota wins
 // even when an upstream provider also labels the response HTTP 429.
 export function recoveryReason(error: unknown): RecoveryReason | undefined {

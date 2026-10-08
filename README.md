@@ -104,6 +104,16 @@ someone with access to the web ui may be able to:
 
 ## features
 
+Account-switch continuation runs on the server when its setting is enabled.
+Besides quota failures, an authenticated identity change can recover an abandoned
+local root turn with no error or final answer. The backend must report the thread
+as idle, not loaded, or in system error; its latest turn must be in progress or
+interrupted. `src/server/unfinished-turn.ts` checks the rollout for a matching
+start and excludes completed, explicitly stopped, superseded, and final-answer
+turns. Unreadable evidence does not qualify. Active turns and uncertain sends
+are never replayed. This extra discovery does not run on initial login, token
+refresh, or same-account quota recovery, and requires a readable local rollout.
+
 - hostable on macOS, Linux (and anything codex cli + node will run on)
 - reachable from the browser
 - thin wrapper, so updates should land fast

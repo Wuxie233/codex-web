@@ -1,6 +1,7 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { randomUUID } from "node:crypto";
+import { hasUnfinishedTurn } from "./unfinished-turn";
 import {
   RATE_LIMIT_CONTINUATION,
   RATE_LIMIT_DELAYS,
@@ -12,6 +13,8 @@ import {
 } from "./rate-limit-recovery";
 export { RATE_LIMIT_CONTINUATION } from "./rate-limit-recovery";
 
+export const ACCOUNT_SWITCH_CONTINUATION =
+  "上一轮在换号时中断，未产生最终答复，现在账号已更新。请先核对当前进度和已有执行结果，再继续未完成的工作，避免重复执行已完成的操作。";
 export const CONTINUATION =
   "上一轮因账号额度不足而中断，现在账号已更新或额度已恢复，请继续之前未完成的工作。先核对当前进度和已有执行结果，再从中断处接着处理，避免重复执行已完成的操作。";
 type Status =
@@ -69,6 +72,7 @@ type AutoAttempt = {
   generation: number;
   quotaRevision: number;
   attempted: Set<string>;
+  includeUnfinished: boolean;
 };
 export type Entry = {
   id: string;
@@ -377,7 +381,7 @@ export class QuotaRecovery {
       return this.autoRunning ?? Promise.resolve();
     this.accountUsage.delete(host);
     this.accountUpdates.delete(host);
-    return this.queueAccountRecovery(host);
+    return this.queueAccountRecovery(host, true);
   }
   // Usage reads alone never start work, including a periodic zero-to-positive update.
   accountRateLimitsRead(host: string, principal: Principal, response: unknown) {
@@ -418,7 +422,7 @@ export class QuotaRecovery {
       return this.autoRunning ?? Promise.resolve();
     return this.queueAccountRecovery(host);
   }
-  private queueAccountRecovery(host: string) {
+  private queueAccountRecovery(host: string, includeUnfinished = false) {
     const generation = (this.accountGenerations.get(host) ?? 0) + 1;
     this.accountGenerations.set(host, generation);
     if (this.autoResumeOnAccountSwitch) {
@@ -427,6 +431,7 @@ export class QuotaRecovery {
         generation,
         quotaRevision: this.quotaRevision,
         attempted: new Set(),
+        includeUnfinished,
       });
       this.autoRunning ??= Promise.resolve()
         .then(() => this.drainAutoQueue())
@@ -472,8 +477,12 @@ export class QuotaRecovery {
               adapter.listThreads(this.historyParams(cursor)),
             );
             next = page.nextCursor ?? null;
-            await this.discoverCandidates(host, adapter, page.data, () =>
-              this.autoAllowed(attempt),
+            await this.discoverCandidates(
+              host,
+              adapter,
+              page.data,
+              () => this.autoAllowed(attempt),
+              attempt.includeUnfinished,
             );
             await this.resolveEntries();
           })().finally(() => {
@@ -498,6 +507,7 @@ export class QuotaRecovery {
         (entry) =>
           entry.hostId === attempt.host &&
           entry.reason !== "rateLimit" &&
+          (entry.reason !== "accountSwitch" || attempt.includeUnfinished) &&
           ["pending", "failed"].includes(entry.status),
       )
       .map((entry) => entry.id);
@@ -946,6 +956,7 @@ export class QuotaRecovery {
     adapter: Adapter,
     items: Thread[],
     proceed: () => boolean,
+    includeUnfinished = false,
   ) {
     const candidates = [...items];
     let complete = true;
@@ -957,8 +968,19 @@ export class QuotaRecovery {
             const thread = await bounded(adapter.readThread(item.id), 5000);
             if (thread) this.reconcileRateChain(host, thread);
             const last = thread?.turns?.at(-1);
-            const reason = recoveryReason(last?.error);
-            if (thread && last?.status === "failed" && reason)
+            const reason =
+              recoveryReason(last?.error) ??
+              (includeUnfinished &&
+              thread &&
+              (await this.unfinished(host, thread))
+                ? "accountSwitch"
+                : undefined);
+            if (
+              thread &&
+              last &&
+              reason &&
+              (last.status === "failed" || reason === "accountSwitch")
+            )
               this.add(
                 host,
                 item.id,
@@ -1000,7 +1022,23 @@ export class QuotaRecovery {
     } while (cursor);
     return false;
   }
-  private eligible(thread: Thread | null, entry: Entry) {
+  private async unfinished(host: string, thread: Thread) {
+    const last = thread.turns?.at(-1);
+    return (
+      host === "local" &&
+      !this.isChild(thread) &&
+      thread.canAcceptDirectInput !== false &&
+      !!thread.path &&
+      !!last &&
+      ["idle", "notLoaded", "systemError"].includes(
+        thread.status?.type ?? "",
+      ) &&
+      ["inProgress", "interrupted"].includes(last.status) &&
+      !last.error &&
+      (await bounded(hasUnfinishedTurn(thread.path, last.id), 5000))
+    );
+  }
+  private async eligible(thread: Thread | null, entry: Entry) {
     const last = thread?.turns?.at(-1);
     return (
       !!thread &&
@@ -1010,10 +1048,12 @@ export class QuotaRecovery {
         thread.status?.type ?? "",
       ) &&
       last?.id === entry.turnId &&
-      (entry.sourceThreadId && entry.reason !== "rateLimit"
-        ? ["failed", "completed"].includes(last.status)
-        : last.status === "failed" &&
-          recoveryReason(last.error) === (entry.reason ?? "quota"))
+      (entry.reason === "accountSwitch"
+        ? await this.unfinished(entry.hostId, thread)
+        : entry.sourceThreadId && entry.reason !== "rateLimit"
+          ? ["failed", "completed"].includes(last.status)
+          : last.status === "failed" &&
+            recoveryReason(last.error) === (entry.reason ?? "quota"))
     );
   }
   async resume(
@@ -1036,7 +1076,12 @@ export class QuotaRecovery {
         if (automatic && !this.autoAllowed(automatic)) break;
         const entry = this.entries.get(id);
         if (!entry || !["pending", "failed"].includes(entry.status)) continue;
-        if (automatic && entry.reason === "rateLimit") continue;
+        if (
+          automatic &&
+          (entry.reason === "rateLimit" ||
+            (entry.reason === "accountSwitch" && !automatic.includeUnfinished))
+        )
+          continue;
         if (
           rateAttempt &&
           !this.rateAllowed(
@@ -1088,7 +1133,7 @@ export class QuotaRecovery {
             }
           }
           let thread = await bounded(adapter.readThread(entry.threadId));
-          if (!this.eligible(thread, entry)) {
+          if (!(await this.eligible(thread, entry))) {
             entry.status = "skipped";
             entry.detail = "任务已继续、停止或完成";
             continue;
@@ -1106,7 +1151,7 @@ export class QuotaRecovery {
             thread = await bounded(adapter.readThread(entry.threadId));
           }
           if (
-            !this.eligible(thread, entry) ||
+            !(await this.eligible(thread, entry)) ||
             revision !== (this.revisions.get(key) ?? 0) ||
             !["pending", "failed"].includes(entry.status)
           ) {
@@ -1124,9 +1169,11 @@ export class QuotaRecovery {
                   {
                     type: "text",
                     text:
-                      entry.reason === "rateLimit"
-                        ? RATE_LIMIT_CONTINUATION
-                        : CONTINUATION,
+                      entry.reason === "accountSwitch"
+                        ? ACCOUNT_SWITCH_CONTINUATION
+                        : entry.reason === "rateLimit"
+                          ? RATE_LIMIT_CONTINUATION
+                          : CONTINUATION,
                     text_elements: [],
                   },
                 ],
