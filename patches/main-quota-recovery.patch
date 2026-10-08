@@ -1,6 +1,6 @@
 --- a/.vite/build/main-C5K7o1Hr.js
 +++ b/.vite/build/main-C5K7o1Hr.js
-@@ -135931,6 +135931,143 @@
+@@ -135931,6 +135931,155 @@
          getRemoteConnectionMaxRetryAttempts: () =>
            this.appState.get(n.Sc.REMOTE_CONNECTION_MAX_RETRY_ATTEMPTS) ?? null,
        });
@@ -45,7 +45,10 @@
 +          console.info("[quota-recovery] quota-read-failed", { generation, readGeneration, elapsedMs: Date.now() - startedAt });
 +          return null;
 +        }).then((response) => {
-+          if (generation !== accountRefreshGeneration || readGeneration !== quotaReadGeneration || !samePrincipal(principal, currentPrincipal)) return;
++          if (generation !== accountRefreshGeneration || readGeneration !== quotaReadGeneration || !samePrincipal(principal, currentPrincipal)) {
++            console.info("[quota-recovery] quota-read-discarded", { generation, currentGeneration: accountRefreshGeneration, readGeneration, currentReadGeneration: quotaReadGeneration, principalMatches: samePrincipal(principal, currentPrincipal) });
++            return;
++          }
 +          recovery.accountRateLimitsRead(e, principal, response);
 +          if (update) {
 +            if (pendingAccountUpdate !== update) return;
@@ -73,8 +76,15 @@
 +        pendingAccountUpdate = undefined;
 +        const update = recovery.beginAccountUpdate(e);
 +        pendingAccountUpdate = update;
-+        void m.getAuthenticatedPrincipal().catch(() => null).then((principal) => {
-+          if (generation !== accountRefreshGeneration) return;
++        void m.getAuthenticatedPrincipal().catch(() => {
++          console.info("[quota-recovery] principal-read-failed", { source, generation, currentGeneration: accountRefreshGeneration });
++          return null;
++        }).then((principal) => {
++          if (generation !== accountRefreshGeneration) {
++            console.info("[quota-recovery] principal-read-discarded", { source, generation, currentGeneration: accountRefreshGeneration });
++            return;
++          }
++          console.info("[quota-recovery] principal-read-complete", { source, generation, available: !!principal, principalMatches: samePrincipal(principal, currentPrincipal) });
 +          if (!principal) {
 +            pendingAccountUpdate = undefined;
 +            return recovery.completeAccountUpdate(e, update, null, null);
@@ -83,6 +93,7 @@
 +          void recovery.accountChanged(e, principal).catch(() => {});
 +          readUsage(principal, generation, update);
 +        }).catch(() => {
++          console.info("[quota-recovery] account-check-failed", { source, generation, currentGeneration: accountRefreshGeneration });
 +          if (generation !== accountRefreshGeneration) return;
 +          pendingAccountUpdate = undefined;
 +          void recovery.completeAccountUpdate(e, update, null, null).catch(() => {});
@@ -122,6 +133,7 @@
 +      m.registerInternalAuthenticatedPrincipalChangeHandler(({ current }) => {
 +        principalObserved = true;
 +        if (!current || (currentPrincipal && !samePrincipal(current, currentPrincipal))) {
++          console.info("[quota-recovery] principal-change-cancelled-check", { generation: accountRefreshGeneration, pending: !!pendingAccountUpdate, available: !!current, principalMatches: samePrincipal(current, currentPrincipal) });
 +          cancelRetry();
 +          ++accountRefreshGeneration;
 +          ++quotaReadGeneration;
@@ -144,7 +156,7 @@
      if (t.id === `local` && this.options.onAppServerSqliteRecovery != null) {
        let e = this.options.onAppServerSqliteRecovery;
        m.registerInternalNotificationHandler((t) => {
-@@ -136056,6 +136193,7 @@
+@@ -136056,6 +136205,7 @@
      return n;
    }
    disposeRemoteConnection(e) {

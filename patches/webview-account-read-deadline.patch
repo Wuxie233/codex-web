@@ -1,0 +1,12 @@
+--- a/webview/assets/app-initial-236e1501144c.js
++++ b/webview/assets/app-initial-236e1501144c.js
+@@ -168122,5 +168122,8 @@
+         }
+         async getAccount(e) {
+-          return this.sendRequest(`account/read`, { refreshToken: !1 }, e);
++          return this.sendRequest(`account/read`, { refreshToken: !1 }, {
++            timeoutMs: 3e4,
++            ...e,
++          });
+         }
+         async getAuthMethod(e) {
