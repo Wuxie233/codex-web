@@ -841,7 +841,7 @@ export class QuotaRecovery {
   private async resolveEntries() {
     const aliases = new Map<string, string>();
     for (const entry of [...this.entries.values()]) {
-      if (entry.resolved) continue;
+      if (entry.resolved || ["resumed", "skipped"].includes(entry.status)) continue;
       const adapter = this.hosts.get(entry.hostId);
       if (!adapter) continue;
       let thread = await bounded(adapter.readThread(entry.threadId)).catch(
