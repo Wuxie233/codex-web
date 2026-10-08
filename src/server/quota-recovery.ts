@@ -1,6 +1,6 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { hasUnfinishedTurn } from "./unfinished-turn";
 import {
   RATE_LIMIT_CONTINUATION,
@@ -161,6 +161,7 @@ export class QuotaRecovery {
   private scanError: string | undefined;
   private autoResumeOnAccountSwitch = false;
   private accounts = new Map<string, string>();
+  private accountFingerprints = new Map<string, string>();
   private accountUsage = new Map<string, UsageState>();
   private accountUpdates = new Map<string, AccountUpdate>();
   private accountGenerations = new Map<string, number>();
@@ -184,6 +185,16 @@ export class QuotaRecovery {
       this.autoResumeOnAccountSwitch =
         settings.autoResumeOnAccountSwitch === true;
       this.autoResumeOn429 = settings.autoResumeOn429 === true;
+      for (const [host, fingerprint] of Object.entries(
+        settings.accountFingerprints ?? {},
+      )) {
+        if (
+          typeof fingerprint !== "string" ||
+          !/^[a-f0-9]{64}$/.test(fingerprint)
+        )
+          throw Error("账号恢复基线格式错误");
+        this.accountFingerprints.set(host, fingerprint);
+      }
       for (const [key, chain] of Object.entries(
         settings.rateLimitChains ?? {},
       )) {
@@ -244,6 +255,7 @@ export class QuotaRecovery {
       autoResumeOnAccountSwitch: account,
       autoResumeOn429: rate,
       rateLimitChains: Object.fromEntries(this.rateChains),
+      accountFingerprints: Object.fromEntries(this.accountFingerprints),
     };
     const file = this.file + ".settings.json";
     mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
@@ -376,9 +388,26 @@ export class QuotaRecovery {
     }
     const identity = identityOf(principal);
     const previous = this.accounts.get(host);
+    const fingerprint = createHash("sha256").update(identity).digest("hex");
+    const previousFingerprint = this.accountFingerprints.get(host);
+    const changed =
+      previous !== undefined
+        ? previous !== identity
+        : previousFingerprint !== undefined &&
+          previousFingerprint !== fingerprint;
     this.accounts.set(host, identity);
-    if (!previous || previous === identity)
-      return this.autoRunning ?? Promise.resolve();
+    if (previousFingerprint !== fingerprint) {
+      this.accountFingerprints.set(host, fingerprint);
+      this.persistSettings();
+    }
+    if (previous !== identity)
+      console.info("[quota-recovery] account-observed", {
+        host,
+        changed,
+        restoredBaseline: previous === undefined && !!previousFingerprint,
+        enabled: this.autoResumeOnAccountSwitch,
+      });
+    if (!changed) return this.autoRunning ?? Promise.resolve();
     this.accountUsage.delete(host);
     this.accountUpdates.delete(host);
     return this.queueAccountRecovery(host, true);
@@ -423,6 +452,11 @@ export class QuotaRecovery {
     return this.queueAccountRecovery(host);
   }
   private queueAccountRecovery(host: string, includeUnfinished = false) {
+    console.info("[quota-recovery] recovery-queued", {
+      host,
+      includeUnfinished,
+      enabled: this.autoResumeOnAccountSwitch,
+    });
     const generation = (this.accountGenerations.get(host) ?? 0) + 1;
     this.accountGenerations.set(host, generation);
     if (this.autoResumeOnAccountSwitch) {
@@ -495,6 +529,7 @@ export class QuotaRecovery {
           if (cursor) seen.add(cursor);
         } while (cursor);
       } catch {
+        console.info("[quota-recovery] account-recovery-scan-failed", { host });
         this.scanError = "部分任务暂时无法读取，请检查连接后刷新。";
       }
     }
@@ -511,6 +546,11 @@ export class QuotaRecovery {
           ["pending", "failed"].includes(entry.status),
       )
       .map((entry) => entry.id);
+    console.info("[quota-recovery] account-recovery-candidates", {
+      host: attempt.host,
+      count: ids.length,
+      includeUnfinished: attempt.includeUnfinished,
+    });
     await this.resume(ids, attempt);
   }
   private save() {

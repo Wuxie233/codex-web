@@ -113,6 +113,11 @@ start and excludes completed, explicitly stopped, superseded, and final-answer
 turns. Unreadable evidence does not qualify. Active turns and uncertain sends
 are never replayed. This extra discovery does not run on initial login, token
 refresh, or same-account quota recovery, and requires a readable local rollout.
+Account identity fingerprints (SHA-256, without credentials) persist across Web
+restarts so a new account is compared with the previous baseline. The first run
+without a saved baseline only records the current account. The server's Electron
+`net.isOnline()` shim permits reconnect attempts; socket results determine backend
+reachability rather than a browser online/offline signal.
 
 - hostable on macOS, Linux (and anything codex cli + node will run on)
 - reachable from the browser

@@ -782,6 +782,11 @@ const crashReporter = {
 };
 
 const net = {
+  // A server has no browser online/offline signal. Keep transport retries enabled;
+  // the actual socket connection determines whether the backend is reachable.
+  isOnline(): boolean {
+    return true;
+  },
   async fetch(input: string | URL, init?: RequestInit): Promise<Response> {
     // log("net.fetch", [input, init]);
     if (typeof globalThis.fetch === "function") {
