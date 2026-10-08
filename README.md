@@ -105,14 +105,19 @@ someone with access to the web ui may be able to:
 ## features
 
 Account-switch continuation runs on the server when its setting is enabled.
-Besides quota failures, an authenticated identity change can recover an abandoned
+Besides quota failures, an authenticated identity change or a backend reconnection
+followed by a valid login can recover an abandoned
 local root turn with no error or final answer. The backend must report the thread
 as idle, not loaded, or in system error; its latest turn must be in progress or
 interrupted. `src/server/unfinished-turn.ts` checks the rollout for a matching
 start and excludes completed, explicitly stopped, superseded, and final-answer
 turns. Unreadable evidence does not qualify. Active turns and uncertain sends
 are never replayed. This extra discovery does not run on initial login, token
-refresh, or same-account quota recovery, and requires a readable local rollout.
+refresh, or same-account quota recovery without a preceding disconnect, and requires
+a readable local rollout. Same-account reconnects qualify because replacing
+credentials can restart the backend without changing the account ID. The disconnect
+marker survives authentication invalidation and is consumed only after a complete
+recovery scan for the current authenticated generation.
 Account identity fingerprints (SHA-256, without credentials) persist across Web
 restarts so a new account is compared with the previous baseline. The first run
 without a saved baseline only records the current account. The server's Electron

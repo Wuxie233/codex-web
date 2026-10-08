@@ -1,6 +1,6 @@
 --- a/.vite/build/main-C5K7o1Hr.js
 +++ b/.vite/build/main-C5K7o1Hr.js
-@@ -135776,6 +135776,83 @@
+@@ -135776,6 +135776,103 @@
          getRemoteConnectionMaxRetryAttempts: () =>
            this.appState.get(n.Sc.REMOTE_CONNECTION_MAX_RETRY_ATTEMPTS) ?? null,
        });
@@ -30,17 +30,10 @@
 +          }
 +        }).catch(() => {});
 +      };
-+      m.registerInternalNotificationHandler((event) => {
-+        recovery.observe(e, event);
-+        if (event.method === "account/rateLimits/updated") {
-+          if (!pendingAccountUpdate) readUsage(currentPrincipal, accountRefreshGeneration);
-+          return;
-+        }
-+        if (event.method !== "account/updated") return;
++      const refreshAccount = () => {
 +        const generation = ++accountRefreshGeneration;
 +        ++quotaReadGeneration;
 +        pendingAccountUpdate = undefined;
-+        if (event.params?.authMode === null) return;
 +        const update = recovery.beginAccountUpdate(e);
 +        pendingAccountUpdate = update;
 +        void m.getAuthenticatedPrincipal().catch(() => null).then((principal) => {
@@ -57,6 +50,33 @@
 +          pendingAccountUpdate = undefined;
 +          void recovery.completeAccountUpdate(e, update, null, null).catch(() => {});
 +        });
++      };
++      let connectedOnce = m.connectionState === "connected";
++      m.registerInternalConnectionStateHandler((state) => {
++        if (state !== "connected") {
++          ++accountRefreshGeneration;
++          ++quotaReadGeneration;
++          pendingAccountUpdate = undefined;
++          recovery.connectionInterrupted(e);
++          return;
++        }
++        if (connectedOnce) refreshAccount();
++        connectedOnce = true;
++      });
++      m.registerInternalNotificationHandler((event) => {
++        recovery.observe(e, event);
++        if (event.method === "account/rateLimits/updated") {
++          if (!pendingAccountUpdate) readUsage(currentPrincipal, accountRefreshGeneration);
++          return;
++        }
++        if (event.method !== "account/updated") return;
++        if (event.params?.authMode === null) {
++          ++accountRefreshGeneration;
++          ++quotaReadGeneration;
++          pendingAccountUpdate = undefined;
++          return;
++        }
++        refreshAccount();
 +      });
 +      m.registerArchiveSuccessHandler((threadId) => recovery.observe(e, { method: "thread/archived", params: { threadId } }));
 +      let principalObserved = false;

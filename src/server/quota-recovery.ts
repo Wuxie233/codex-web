@@ -162,6 +162,7 @@ export class QuotaRecovery {
   private autoResumeOnAccountSwitch = false;
   private accounts = new Map<string, string>();
   private accountFingerprints = new Map<string, string>();
+  private interruptedConnections = new Set<string>();
   private accountUsage = new Map<string, UsageState>();
   private accountUpdates = new Map<string, AccountUpdate>();
   private accountGenerations = new Map<string, number>();
@@ -407,10 +408,15 @@ export class QuotaRecovery {
         restoredBaseline: previous === undefined && !!previousFingerprint,
         enabled: this.autoResumeOnAccountSwitch,
       });
-    if (!changed) return this.autoRunning ?? Promise.resolve();
+    if (!changed && !this.interruptedConnections.has(host))
+      return this.autoRunning ?? Promise.resolve();
     this.accountUsage.delete(host);
     this.accountUpdates.delete(host);
     return this.queueAccountRecovery(host, true);
+  }
+  connectionInterrupted(host: string) {
+    if (this.accounts.has(host)) this.interruptedConnections.add(host);
+    void this.accountChanged(host, null);
   }
   // Usage reads alone never start work, including a periodic zero-to-positive update.
   accountRateLimitsRead(host: string, principal: Principal, response: unknown) {
@@ -499,25 +505,30 @@ export class QuotaRecovery {
         // Known failures can resume immediately; unopened history follows one page at a time.
         await this.resumeAutomatic(attempt);
         let cursor: string | null = null;
+        let complete = true;
         const seen = new Set<string>();
         do {
           await this.waitUntilIdle();
           if (!this.autoAllowed(attempt)) break;
           const adapter = this.hosts.get(host);
-          if (!adapter) break;
+          if (!adapter) {
+            complete = false;
+            break;
+          }
           let next: string | null = null;
           this.scanning = (async () => {
             const page = await bounded(
               adapter.listThreads(this.historyParams(cursor)),
             );
             next = page.nextCursor ?? null;
-            await this.discoverCandidates(
+            const discovered = await this.discoverCandidates(
               host,
               adapter,
               page.data,
               () => this.autoAllowed(attempt),
               attempt.includeUnfinished,
             );
+            complete = complete && discovered;
             await this.resolveEntries();
           })().finally(() => {
             this.scanning = undefined;
@@ -528,6 +539,8 @@ export class QuotaRecovery {
           if (cursor && seen.has(cursor)) throw Error("重复的历史分页游标");
           if (cursor) seen.add(cursor);
         } while (cursor);
+        if (complete && this.autoAllowed(attempt) && attempt.includeUnfinished)
+          this.interruptedConnections.delete(host);
       } catch {
         console.info("[quota-recovery] account-recovery-scan-failed", { host });
         this.scanError = "部分任务暂时无法读取，请检查连接后刷新。";

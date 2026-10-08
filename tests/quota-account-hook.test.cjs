@@ -46,6 +46,7 @@ function hook() {
     },
   };
   const m = {
+    registerInternalConnectionStateHandler() {},
     sendAppServerRequest(method, params) {
       assert.equal(method, "account/rateLimits/read");
       assert.equal(params, undefined);
