@@ -102,3 +102,5 @@ patch --batch --forward --fuzz=0 --strip 1 --directory scratch/asar < patches/we
 
 patch --batch --forward --fuzz=0 --strip 1 --directory scratch/asar < patches/dot-shell-panel.patch
 patch --batch --forward --fuzz=0 --strip 1 --directory scratch/asar < patches/webview-mobile-settings.patch
+
+patch --batch --forward --fuzz=0 --strip 1 --directory scratch/asar < patches/webview-thread-tools-config.patch

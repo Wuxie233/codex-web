@@ -1,0 +1,10 @@
+--- a/webview/assets/app-initial-236e1501144c.js
++++ b/webview/assets/app-initial-236e1501144c.js
+@@ -117506,6 +117506,7 @@
+         `tool_suggest`,
+         `tool_call_mcp_elicitation`,
+         `writing_blocks`,
++        `thread_tools`,
+       ])),
+       (ekt = `workspace_dependencies`),
+       (tkt = `guardianv2`),

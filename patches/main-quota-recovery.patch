@@ -1,6 +1,6 @@
 --- a/.vite/build/main-C5K7o1Hr.js
 +++ b/.vite/build/main-C5K7o1Hr.js
-@@ -135776,6 +135776,130 @@
+@@ -135931,6 +135931,143 @@
          getRemoteConnectionMaxRetryAttempts: () =>
            this.appState.get(n.Sc.REMOTE_CONNECTION_MAX_RETRY_ATTEMPTS) ?? null,
        });
@@ -14,7 +14,20 @@
 +      };
 +      recovery.registerHost(e, {
 +        disposeRecovery: () => { cancelRetry(); ++accountRefreshGeneration; ++quotaReadGeneration; pendingAccountUpdate = undefined; },
-+        readThread: (id) => m.readThread(id, { includeTurns: true }),
++        readThread: async (id) => {
++          const thread = await m.readThread(id, { includeTurns: false });
++          if (!thread) return null;
++          const turns = [];
++          let cursor = null;
++          do {
++            const page = await m.listThreadTurns(id, {
++              cursor, limit: 100, itemsView: "full",
++            });
++            turns.push(...page.data);
++            cursor = page.nextCursor;
++          } while (cursor != null);
++          return { ...thread, turns: turns.reverse() };
++        },
 +        listThreads: (params) => m.listThreads(params),
 +        resumeThread: (id, options) => m.resumeThread(id, options),
 +        startTurn: (params, beforeSend) => m.startTurn(params, undefined, beforeSend),
@@ -131,11 +144,11 @@
      if (t.id === `local` && this.options.onAppServerSqliteRecovery != null) {
        let e = this.options.onAppServerSqliteRecovery;
        m.registerInternalNotificationHandler((t) => {
-@@ -135936,6 +136060,7 @@
+@@ -136056,6 +136193,7 @@
+     return n;
    }
    disposeRemoteConnection(e) {
 +    globalThis.__codexQuotaRecovery?.unregisterHost(e);
      this.threadCatalogSyncManager?.detachSource(e);
      let t = this.appServerConnectionRegistry.getMaybeConnection(e);
      t &&
-       (t.dispose(),
