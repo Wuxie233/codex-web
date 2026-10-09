@@ -116,9 +116,13 @@ environment as other browser checks.
 
 `build:browser` also prepares `scratch/webview-delivery` from the patched source.
 The HTTP server prefers this overlay and falls back to the original webview for
-other assets. The two main modules are compacted without renaming variables or
-rewriting expressions; legal notices are retained. The overlay HTML preloads the
-primary module so its download can overlap initial startup.
+other assets. All JavaScript and CSS assets get precompressed representations,
+including lazy route chunks and locale packs. The two main modules and preload
+bridge are compacted without renaming variables or rewriting expressions; legal
+notices are retained. The overlay HTML preloads the primary module, startup RPC
+and route entry modules, and primary stylesheet so their downloads overlap the
+initial startup. Stylesheet preload uses the same CORS mode as the route loader;
+it does not apply the stylesheet before the route requests it.
 
 Every overlay file has matching identity, gzip and Brotli representations.
 This matters with the static server's multiple-root fallback: a missing preferred

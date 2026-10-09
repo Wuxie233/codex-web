@@ -16,19 +16,33 @@ async function writeChanged(file, bytes) {
   await fs.writeFile(file + ".tmp", bytes);
   await fs.rename(file + ".tmp", file);
 }
-const names = (await fs.readdir(path.join(source, "assets"))).filter((name) =>
+const assets = await fs.readdir(path.join(source, "assets"));
+const modules = assets.filter((name) =>
   /^app-(initial|primary)-[a-f0-9]+\.js$/.test(name),
 );
 if (
-  names.length !== 2 ||
-  names.filter((name) => name.startsWith("app-primary-")).length !== 1
+  modules.length !== 2 ||
+  modules.filter((name) => name.startsWith("app-primary-")).length !== 1
 )
   throw new Error(
     "Expected exactly one initial and primary application module",
   );
+// These resources are required by every startup, including warm reloads.
+const startupModules = assets.filter((name) =>
+  /^(rpc|app-main|authed-route|home-composer-route)-[a-f0-9]+\.js$/.test(name),
+);
+const styles = assets.filter((name) =>
+  /^app-(initial|primary)-[a-f0-9]+\.css$/.test(name),
+);
+// Lazy route chunks and locale packs also block the first usable screen.
+const names = assets.filter((name) => /\.(js|css)$/.test(name));
 for (const name of names) {
   const input = await fs.readFile(path.join(source, "assets", name), "utf8");
-  const bytes = Buffer.from(await compactModule(name, input));
+  const bytes = Buffer.from(
+    modules.includes(name) || name === "preload.js"
+      ? await compactModule(name, input)
+      : input,
+  );
   await writeChanged(path.join(output, "assets", name), bytes);
   await writeChanged(
     path.join(output, "assets", name + ".gz"),
@@ -40,13 +54,28 @@ for (const name of names) {
       params: { [constants.BROTLI_PARAM_QUALITY]: 6 },
     }),
   );
-  console.log(`${name}: ${Buffer.byteLength(input)} -> ${bytes.length} bytes`);
+  if (modules.includes(name) || name === "preload.js")
+    console.log(
+      `${name}: ${Buffer.byteLength(input)} -> ${bytes.length} bytes`,
+    );
 }
+console.log(`Prepared ${names.length} JavaScript and CSS assets`);
 let html = await fs.readFile(path.join(source, "index.html"), "utf8");
-const primary = names.find((name) => name.startsWith("app-primary-"));
+const primary = modules.find((name) => name.startsWith("app-primary-"));
 html = html.replace(
   "</head>",
-  `  <link rel="modulepreload" href="./assets/${primary}" />\n</head>`,
+  [
+    ...[primary, ...startupModules].map(
+      (name) => `  <link rel="modulepreload" href="./assets/${name}" />`,
+    ),
+    ...styles
+      .filter((name) => name.startsWith("app-primary-"))
+      .map(
+        (name) =>
+          `  <link rel="preload" as="style" crossorigin href="./assets/${name}" />`,
+      ),
+    "</head>",
+  ].join("\n"),
 );
 await writeChanged(path.join(output, "index.html"), Buffer.from(html));
 await writeChanged(
