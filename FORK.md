@@ -112,6 +112,16 @@ Checks: `node tests/browser/project-sources.cjs` and
 `node tests/browser/project-actions.cjs` with the same Playwright
 environment as other browser checks.
 
+New threads receive an explicit project assignment through `thread/start.projectId`.
+The webview passes its selected legacy project ID to the main-process adapter,
+which maps it to the shared server ID before transmission. Explicit selections
+bypass unassigned prewarmed threads. The start response and notifications are
+authoritative for membership; saving the same assignment must not call `thread/metadata/update`
+before the first turn, because a newly created thread has no persisted rollout
+at that point. Unknown project capability fails before creation rather than
+silently dropping the selected project. Existing-thread moves retain their
+metadata update path.
+
 ### Startup asset delivery
 
 `build:browser` also prepares `scratch/webview-delivery` from the patched source.

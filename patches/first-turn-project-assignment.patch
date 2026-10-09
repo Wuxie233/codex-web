@@ -1,0 +1,101 @@
+--- a/.vite/build/main-C5K7o1Hr.js
++++ b/.vite/build/main-C5K7o1Hr.js
+@@ -118027,11 +118027,40 @@
+   const originalSet = assignments.setAssignments.bind(assignments);
+   const originalInitialize = backend.initializeProjects.bind(backend);
+   const originalStart = backend.start.bind(backend);
++  const deliveryOptions = connection.messageDelivery.options;
++  const originalTransform = deliveryOptions.transformOutgoingMessage;
++  const originalRouteResponse = connection.routeResponse;
++  const pendingProjectStarts = new Set();
++  const transform = (message) => {
++    const outgoing = originalTransform == null ? message : originalTransform(message);
++    if (outgoing.method !== `thread/start` ||
++        !Object.prototype.hasOwnProperty.call(outgoing.params ?? {}, `webProjectAssignment`)) return outgoing;
++    const { webProjectAssignment: assignment, ...params } = outgoing.params;
++    if (backend.projectSupport === `unknown`) throw Error(`Project catalog is still loading. Try creating the task again after it loads.`);
++    if (backend.projectSupport === `supported`) {
++      const project = assignment == null ? null : backend.serverProjectsByLegacyId.get(assignment.projectId);
++      if (assignment != null && project == null) throw Error(`Cannot assign a deleted project`);
++      params.projectId = project?.id ?? null;
++      pendingProjectStarts.add(outgoing.id);
++    }
++    return { ...outgoing, params };
++  };
++  deliveryOptions.transformOutgoingMessage = transform;
+   let revision = 0;
+   let refresh = null;
+   const changedThreads = new Set();
+   const threadRevisions = new Map();
+   const liveMemberships = new Map();
++  const routeResponse = function(message, ...args) {
++    if (pendingProjectStarts.delete(message.id)) {
++      const thread = message.result?.thread;
++      if (thread != null && Object.prototype.hasOwnProperty.call(thread, `projectId`)) {
++        liveMemberships.set(thread.id, thread.projectId ?? null);
++      }
++    }
++    return originalRouteResponse.call(this, message, ...args);
++  };
++  connection.routeResponse = routeResponse;
+   const publish = (changedKeys) => {
+     windows.sendMessageToAllWindows({ type: `global-state-updated`, keys: changedKeys });
+     windows.sendMessageToAllWindows({ type: `workspace-root-options-updated` });
+@@ -118156,6 +118185,12 @@
+       const project = assignment == null ? null : backend.serverProjectsByLegacyId.get(assignment.projectId);
+       if (assignment != null && project == null) throw Error(`Cannot assign a deleted project`);
+       signal.throwIfAborted();
++      // A new thread has no rollout until its first turn. Its start response
++      // already assigned the project, so do not issue a redundant disk read.
++      if (liveMemberships.has(threadId) && liveMemberships.get(threadId) === (project?.id ?? null)) {
++        await applyMembership(threadId, project?.id ?? null);
++        continue;
++      }
+       const baseline = threadRevisions.get(threadId) ?? 0;
+       await connection.sendAppServerRequest(`thread/metadata/update`, {
+         threadId, projectId: project?.id ?? ``,
+@@ -118239,10 +118274,15 @@
+       scheduleRefresh();
+     });
+     const disconnect = connection.registerInternalConnectionStateHandler((state) => {
+-      if (state !== `connected`) { ++revision; refresh = null; changedThreads.clear(); threadRevisions.clear(); liveMemberships.clear(); }
++      if (state !== `connected`) { ++revision; refresh = null; changedThreads.clear(); threadRevisions.clear(); liveMemberships.clear(); pendingProjectStarts.clear(); }
+     });
+     const stop = originalStart();
+-    return () => { unsubscribe(); disconnect(); stop(); };
++    return () => {
++      if (deliveryOptions.transformOutgoingMessage === transform) deliveryOptions.transformOutgoingMessage = originalTransform;
++      if (connection.routeResponse === routeResponse) connection.routeResponse = originalRouteResponse;
++      pendingProjectStarts.clear();
++      unsubscribe(); disconnect(); stop();
++    };
+   };
+ }
+
+--- a/webview/assets/app-initial-236e1501144c.js
++++ b/webview/assets/app-initial-236e1501144c.js
+@@ -164722,7 +164722,8 @@
+             f = null,
+             p = null;
+           try {
+-            (u.canUsePrewarmedThread &&
++            (e.projectAssignment === void 0 &&
++              u.canUsePrewarmedThread &&
+               u.permissionsConfig != null &&
+               this.params.prewarmedThreadManager.hasPrewarmedThread(
+                 e.cwd,
+@@ -164757,7 +164758,13 @@
+             f = {
+               response: await this.params.requestClient.sendRequest(
+                 p.method,
+-                p.request,
++                {
++                  ...p.request,
++                  ...(p.method === `thread/start` &&
++                    (e.projectAssignment === null || e.projectAssignment?.projectKind === `local`)
++                    ? { webProjectAssignment: e.projectAssignment }
++                    : {}),
++                },
+                 { ...p.options, onOutcomeUnknown: n },
+               ),
+               shellEnvironmentPolicy: p.shellEnvironmentPolicy,

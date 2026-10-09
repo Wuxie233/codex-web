@@ -83,3 +83,5 @@ patch --batch --forward --strip 1 --directory scratch/asar < patches/main-projec
 patch --batch --forward --strip 1 --directory scratch/asar < patches/main-project-notifications.patch
 
 patch --batch --forward --strip 1 --directory scratch/asar < patches/webview-statsig-startup-cache.patch
+
+patch --batch --forward --strip 1 --directory scratch/asar < patches/first-turn-project-assignment.patch
