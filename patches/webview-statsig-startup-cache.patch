@@ -1,0 +1,42 @@
+--- a/webview/assets/app-initial-236e1501144c.js
++++ b/webview/assets/app-initial-236e1501144c.js
+@@ -179745,8 +179745,20 @@
+       return (
+         (0, n.useMemo)(() => {
+           i.loadingStatus !== `Ready` &&
+-            i
+-              .initializeAsync()
++            (async () => {
++              await i.storageProvider.isReadyResolver();
++              let user = i.getContext().user,
++                cached = i.dataAdapter.getDataSync(user),
++                age = cached ? Date.now() - cached.receivedAt : Infinity;
++              // Match all targeting fields, not only the SDK's user/account key.
++              if (cached && age >= 0 && age < 10 * 6e4 &&
++                  cached.fullUserHash === t._getFullUserHash(user)) {
++                i.initializeSync({ disableBackgroundCacheRefresh: !0 });
++                void i.refreshValuesAsync().catch(t.Log.error);
++                return;
++              }
++              await i.initializeAsync();
++            })()
+               .catch(t.Log.error)
+               .finally(() => o(!1));
+         }, []),
+@@ -426881,6 +426893,7 @@
+       (mWo = {
+         loggingEnabled: `disabled`,
+         overrideAdapter: window.__ELECTRON_SHIM__.overrideAdapter,
++        storageProvider: window.__ELECTRON_SHIM__.statsigStorage,
+         enableLiveValuesAutoRefresh: !0,
+         networkConfig: {
+           api: lWo,
+@@ -426889,7 +426902,7 @@
+           networkOverrideFunc: LUo,
+         },
+       }),
+-      (hWo = { ...mWo, disableStorage: !0, loggingEnabled: `disabled` }),
++      (hWo = { ...mWo, storageProvider: void 0, disableStorage: !0, loggingEnabled: `disabled` }),
+       (gWo = 1));
+   });
+ function vWo() {

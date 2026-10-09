@@ -131,6 +131,21 @@ mtimes and validators. Keep cache revalidation: upstream-looking filenames do
 not change when this fork patches their contents, so immutable caching is unsafe.
 Always rebuild browser delivery after changing patched webview files.
 
+Statsig evaluation payloads can exceed localStorage's quota, silently defeating
+warm-start caching. `src/browser/statsig-storage.ts` stores those payloads in
+IndexedDB while retaining the SDK's existing identity/session records in
+localStorage. Storage-disabled clients still use the SDK's in-memory provider.
+An unavailable IndexedDB cache falls back to memory without blocking startup.
+
+`webview-statsig-startup-cache.patch` permits cached startup only when the SDK's
+full targeting-user hash matches and the evaluation is less than ten minutes
+old. This includes account, plan, locale, application version and session fields;
+it does not rely only on the SDK's narrower user/account cache key. A cache hit
+initializes synchronously and refreshes live values in the background. Missing,
+expired or mismatched evaluations keep the original network initialization path,
+including its language and feature configuration behavior. Authentication and
+account discovery still run before these cached evaluations are selected.
+
 Validation: `node --test tests/delivery-module.test.cjs`, then with the server
 running `node tests/browser/delivery-headers.cjs` and the existing sidebar tests.
 For browser timing, Playwright `httpCredentials` disables cache through request

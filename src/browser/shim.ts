@@ -1,4 +1,5 @@
 import "./mobile-sidebar-actions";
+import { createStatsigStorage } from "./statsig-storage";
 import { installQuotaRecovery } from "./quota-recovery";
 import { downloadLocalFile, type LocalFileOpenRequest } from "./downloads";
 import {
@@ -111,6 +112,7 @@ type StatsigGateEvaluation = {
 };
 
 type ElectronShimState = {
+  statsigStorage?: ReturnType<typeof createStatsigStorage>;
   downloadLocalFile?: (request: LocalFileOpenRequest) => boolean;
   initialRoute?: string;
   initialSidebarState?: boolean;
@@ -371,6 +373,7 @@ const themeMediaQuery = matchMedia("(prefers-color-scheme: dark)");
 const mobileMediaQuery = matchMedia("(max-width: 768px)");
 const initialSidebarState = !mobileMediaQuery.matches;
 const electronShim = (window.__ELECTRON_SHIM__ ??= {});
+electronShim.statsigStorage = createStatsigStorage();
 electronShim.downloadLocalFile = downloadLocalFile;
 const buildFlavor: "prod" | "dev" | "agent" | string = "prod";
 
