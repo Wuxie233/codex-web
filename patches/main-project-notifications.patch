@@ -1,0 +1,20 @@
+--- a/.vite/build/src-VqXTPopo.js
++++ b/.vite/build/src-VqXTPopo.js
+@@ -20387,7 +20387,7 @@
+     error: !0,
+     "thread/started": !0,
+     "thread/name/updated": !0,
+-    "thread/project/updated": !1,
++    "thread/project/updated": !0,
+     "thread/environment/connected": !0,
+     "thread/environment/disconnected": !1,
+     "thread/settings/updated": !0,
+@@ -20409,7 +20409,7 @@
+     "command/exec/outputDelta": !1,
+     "process/outputDelta": !1,
+     "process/exited": !1,
+-    "project/changed": !1,
++    "project/changed": !0,
+     "item/commandExecution/outputDelta": !0,
+     "item/commandExecution/terminalInteraction": !0,
+     "item/fileChange/outputDelta": !0,
