@@ -1,0 +1,244 @@
+--- a/.vite/build/main-C5K7o1Hr.js
++++ b/.vite/build/main-C5K7o1Hr.js
+@@ -118020,6 +118020,233 @@
+     e.get(t) === r && e.delete(t);
+   }
+ }
++// Keep the Desktop legacy cache as a projection of the shared project catalog.
++function installSharedProjectSync(backend, manager, state, connection) {
++  const assignments = manager.threadProjectAssignments;
++  const windows = manager.windowManager;
++  const keys = n.Sc;
++  const originalSet = assignments.setAssignments.bind(assignments);
++  const originalInitialize = backend.initializeProjects.bind(backend);
++  const originalStart = backend.start.bind(backend);
++  let revision = 0;
++  let refresh = null;
++  const changedThreads = new Set();
++  const threadRevisions = new Map();
++  const liveMemberships = new Map();
++  const publish = (changedKeys) => {
++    windows.sendMessageToAllWindows({ type: `global-state-updated`, keys: changedKeys });
++    windows.sendMessageToAllWindows({ type: `workspace-root-options-updated` });
++  };
++  const report = (error) => backend.logger.warning(`Shared project synchronization failed`, {
++    safe: {}, sensitive: { error },
++  });
++  const assignmentFor = (projectId) => projectId == null ? null : ({
++    projectKind: `local`,
++    projectId: backend.legacyProjectIdsByServerId.get(projectId) ?? projectId,
++  });
++  async function applyMembership(threadId, projectId) {
++    const existing = n.Ai(state.get(keys.THREAD_PROJECT_ASSIGNMENTS))[threadId];
++    // This adapter owns the local execution host, not remote-host assignments.
++    if (existing != null && existing.projectKind !== `local`) return;
++    const projectless = new Set(state.get(keys.PROJECTLESS_THREAD_IDS) ?? []);
++    projectId == null ? projectless.add(threadId) : projectless.delete(threadId);
++    state.set(keys.PROJECTLESS_THREAD_IDS, [...projectless]);
++    await originalSet({ [threadId]: assignmentFor(projectId) });
++    publish([keys.PROJECTLESS_THREAD_IDS]);
++  }
++  async function readThreads(signal) {
++    const threads = new Map();
++    for (const archived of [false, true]) {
++      let cursor = null;
++      const cursors = new Set();
++      do {
++        const page = await connection.sendAppServerRequest(`thread/list`, {
++          archived, cursor, limit: 100, sortKey: `created_at`, sourceKinds: n.Ni, modelProviders: [],
++          useStateDbOnly: true,
++        });
++        signal.throwIfAborted();
++        for (const thread of page.data) threads.set(thread.id, thread);
++        cursor = page.nextCursor;
++        if (cursor != null && cursors.has(cursor)) throw Error(`Repeated thread catalog cursor`);
++        cursors.add(cursor);
++      } while (cursor != null);
++    }
++    return threads;
++  }
++  function applyProjects(projects) {
++    const previous = backend.cache.getProjects();
++    const current = {};
++    const order = [];
++    backend.serverProjectsByLegacyId.clear();
++    for (const project of projects) {
++      backend.storeProject(project);
++      const id = backend.legacyProjectIdsByServerId.get(project.id);
++      if (backend.pendingDeletions.get(backend.migrationIdentity, id) != null) continue;
++      current[id] = {
++        id, name: project.name, rootPaths: project.roots.map((root) => root.path),
++        createdAt: project.createdAt * 1000, updatedAt: project.updatedAt * 1000,
++      };
++      order.push(id);
++      const metadata = project.metadata ?? {};
++      let marker = null;
++      if (metadata[`appearance.marker`] != null) {
++        try { marker = JSON.parse(metadata[`appearance.marker`]); }
++        catch (error) { report(error); }
++      }
++      const appearance = n.Ha.safeParse({ color: metadata[`appearance.color`], marker });
++      backend.cache.updateAppearance(id, appearance.success ? appearance.data : null);
++    }
++    state.set(keys.LOCAL_PROJECTS, current);
++    const oldOrder = state.get(keys.PROJECT_ORDER) ?? [];
++    // Remote project positions remain outside the local-host ownership boundary.
++    let index = 0;
++    const mergedOrder = oldOrder.flatMap((id) => {
++      if (previous[id] == null && current[id] == null) return [id];
++      return index < order.length ? [order[index++]] : [];
++    });
++    state.set(keys.PROJECT_ORDER, [...mergedOrder, ...order.slice(index)]);
++    publish([keys.LOCAL_PROJECTS, keys.PROJECT_ORDER, keys.PROJECT_APPEARANCES]);
++  }
++  async function refreshCatalog(signal) {
++    while (!signal.aborted) {
++      const baseline = revision;
++      const projects = await backend.listProjects(signal);
++      const threads = await readThreads(signal);
++      signal.throwIfAborted();
++      if (baseline !== revision) continue;
++      applyProjects(projects);
++      const changes = {};
++      const existing = n.Ai(state.get(keys.THREAD_PROJECT_ASSIGNMENTS));
++      const projectless = new Set(state.get(keys.PROJECTLESS_THREAD_IDS) ?? []);
++      for (const thread of threads.values()) {
++        if (existing[thread.id] != null && existing[thread.id].projectKind !== `local`) continue;
++        changes[thread.id] = assignmentFor(thread.projectId);
++        thread.projectId == null ? projectless.add(thread.id) : projectless.delete(thread.id);
++      }
++      for (const [threadId, projectId] of liveMemberships) {
++        if (existing[threadId] != null && existing[threadId].projectKind !== `local`) continue;
++        changes[threadId] = assignmentFor(projectId);
++        projectId == null ? projectless.add(threadId) : projectless.delete(threadId);
++      }
++      state.set(keys.PROJECTLESS_THREAD_IDS, [...projectless]);
++      await originalSet(changes);
++      publish([keys.PROJECTLESS_THREAD_IDS]);
++      if (baseline === revision) return;
++    }
++    signal.throwIfAborted();
++  }
++  function scheduleRefresh() {
++    if (!backend.projectsReady || backend.projectSupport !== `supported` || refresh != null) return;
++    const signal = backend.connectionLifetime.signal;
++    const job = refreshCatalog(signal).catch((error) => {
++      if (!signal.aborted) report(error);
++    }).finally(() => { if (refresh === job) refresh = null; });
++    refresh = job;
++  }
++  assignments.setAssignments = async (changes) => {
++    await backend.ensureProjectsReady();
++    const signal = backend.connectionLifetime.signal;
++    for (const [threadId, assignment] of Object.entries(changes)) {
++      const previous = n.Ai(state.get(keys.THREAD_PROJECT_ASSIGNMENTS))[threadId];
++      const local = assignment?.projectKind === `local` ||
++        (assignment == null && previous?.projectKind !== `remote`);
++      if (!local || backend.projectSupport !== `supported`) {
++        await originalSet({ [threadId]: assignment });
++        continue;
++      }
++      const project = assignment == null ? null : backend.serverProjectsByLegacyId.get(assignment.projectId);
++      if (assignment != null && project == null) throw Error(`Cannot assign a deleted project`);
++      signal.throwIfAborted();
++      const baseline = threadRevisions.get(threadId) ?? 0;
++      await connection.sendAppServerRequest(`thread/metadata/update`, {
++        threadId, projectId: project?.id ?? ``,
++      });
++      signal.throwIfAborted();
++      if ((threadRevisions.get(threadId) ?? 0) === baseline) {
++        await applyMembership(threadId, project?.id ?? null);
++      }
++    }
++  };
++  backend.initializeProjects = async (signal) => {
++    await originalInitialize(signal);
++    if (backend.projectSupport !== `supported`) return;
++    backend.projectsReady = false;
++    const identity = backend.migrationIdentity;
++    const migration = state.get(keys.APP_SERVER_PROJECTS_MIGRATION_BY_HOST)?.[identity];
++    if (migration?.threadAssignmentsMigrated !== true) {
++      const threads = await readThreads(signal);
++      // Once migration begins, never infer the same thread again after a restart.
++      // A lost write has an unknown result and must not replay a later user clear.
++      const attempted = new Set(migration?.webMembershipMigrationAttempted ?? []);
++      const excluded = new Set([...attempted, ...changedThreads]);
++      for (const thread of threads.values()) if (thread.projectId != null) excluded.add(thread.id);
++      const inferred = {};
++      await bOe({
++        affectedRootPaths: Object.values(backend.cache.getProjects()).flatMap((project) => project.rootPaths),
++        excludedThreadIds: excluded,
++        getGitOriginUrl: manager.getGitOriginUrl,
++        globalState: state,
++        host: manager.host,
++        listThreads: manager.listThreads,
++        matchRootsByCanonicalHostIdentity: true,
++        readThread: manager.readThread,
++        threadProjectAssignments: { setAssignments: async (changes) => Object.assign(inferred, changes) },
++        windowManager: windows,
++      });
++      signal.throwIfAborted();
++      const legacy = { ...inferred, ...n.Ai(state.get(keys.THREAD_PROJECT_ASSIGNMENTS)) };
++      for (const [threadId, assignment] of Object.entries(legacy)) {
++        if (assignment.projectKind !== `local` || excluded.has(threadId) || changedThreads.has(threadId)) continue;
++        const thread = threads.get(threadId);
++        const project = backend.serverProjectsByLegacyId.get(assignment.projectId);
++        if (thread == null || thread.projectId != null || project == null) continue;
++        attempted.add(threadId);
++        state.update(keys.APP_SERVER_PROJECTS_MIGRATION_BY_HOST, (all) => ({
++          ...all, [identity]: { ...all?.[identity], webMembershipMigrationAttempted: [...attempted] },
++        }));
++        await state.flushOrThrow();
++        signal.throwIfAborted();
++        if (changedThreads.has(threadId)) continue;
++        await connection.sendAppServerRequest(`thread/metadata/update`, { threadId, projectId: project.id });
++        signal.throwIfAborted();
++      }
++      state.update(keys.APP_SERVER_PROJECTS_MIGRATION_BY_HOST, (all) => ({
++        ...all, [identity]: { ...all?.[identity], threadAssignmentsMigrated: true },
++      }));
++      await state.flushOrThrow();
++    }
++    await refreshCatalog(signal);
++    backend.projectsReady = true;
++  };
++  backend.start = () => {
++    const unsubscribe = connection.registerInternalNotificationHandler((event) => {
++      const started = event.method === `thread/started` &&
++        Object.prototype.hasOwnProperty.call(event.params?.thread ?? {}, `projectId`);
++      if (event.method !== `project/changed` && event.method !== `thread/project/updated` && !started) return;
++      ++revision;
++      if (event.method === `project/changed` && event.params.changeType === `deleted`) {
++        for (const [threadId, projectId] of liveMemberships) {
++          if (projectId === event.params.projectId) liveMemberships.set(threadId, null);
++        }
++      }
++      if (event.method === `thread/project/updated` || started) {
++        const threadId = started ? event.params.thread.id : event.params.threadId;
++        const projectId = started ? event.params.thread.projectId : event.params.projectId;
++        changedThreads.add(threadId);
++        liveMemberships.set(threadId, projectId);
++        threadRevisions.set(threadId, (threadRevisions.get(threadId) ?? 0) + 1);
++        if (backend.projectsReady) void applyMembership(threadId, projectId).catch(report);
++      }
++      scheduleRefresh();
++    });
++    const disconnect = connection.registerInternalConnectionStateHandler((state) => {
++      if (state !== `connected`) { ++revision; refresh = null; changedThreads.clear(); threadRevisions.clear(); liveMemberships.clear(); }
++    });
++    const stop = originalStart();
++    return () => { unsubscribe(); disconnect(); stop(); };
++  };
++}
++
+ var gOe = 100,
+   _Oe = Symbol(`project-order`),
+   vOe = class {
+@@ -134414,6 +134641,7 @@
+       })),
+       this.demoTools != null && this.disposables.add(this.demoTools));
+     let u = new vOe(this.scopedState, i, new c2(this.scopedState));
++    installSharedProjectSync(u, this.projectsManager, this.scopedState, i);
+     (this.projectsManager.setProjectBackend(u),
+       this.disposables.add(u.start()));
+     let d = (e) => {
