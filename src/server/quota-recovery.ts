@@ -1102,7 +1102,9 @@ export class QuotaRecovery {
       ) &&
       last?.id === entry.turnId &&
       (entry.reason === "accountSwitch"
-        ? await this.unfinished(entry.hostId, thread)
+        ? (last.status === "failed" &&
+            recoveryReason(last.error) === "accountSwitch") ||
+          (await this.unfinished(entry.hostId, thread))
         : entry.sourceThreadId && entry.reason !== "rateLimit"
           ? ["failed", "completed"].includes(last.status)
           : last.status === "failed" &&
@@ -1144,8 +1146,11 @@ export class QuotaRecovery {
           )
         )
           continue;
-        if (automatic?.attempted.has(entry.id)) continue;
-        automatic?.attempted.add(entry.id);
+        // A continuation can fail with a new turn ID before the next history
+        // page. Each account recovery attempt may dispatch a thread only once.
+        const threadKey = this.key(entry.hostId, entry.threadId);
+        if (automatic?.attempted.has(threadKey)) continue;
+        automatic?.attempted.add(threadKey);
         const adapter = this.hosts.get(entry.hostId);
         if (!adapter) {
           entry.status = "failed";
