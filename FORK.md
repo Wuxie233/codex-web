@@ -307,3 +307,5 @@ The menu and main-process patches must be reapplied on Desktop bundle upgrades.
 Validate with `npm run build:server`,
 `node --test tests/quota-recovery.test.cjs tests/quota-account-hook.test.cjs tests/rate-limit-recovery.test.cjs`
 and `npm run build:browser`.
+
+Dynamic app-server delegation and thread-query calls use the same bounded native app-tool bridge as MCP pipe calls. This avoids relying on a browser stream-owner broadcast during reconnection; an uncertain dispatched call is never replayed. Turn completion aborts outstanding calls.
