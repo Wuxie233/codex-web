@@ -7,7 +7,7 @@ type RecoveryEntry = {
   interruptedAt: number | string;
   status: "pending" | "sending" | "resumed" | "skipped" | "failed" | "unknown";
   detail?: string;
-  reason?: "quota" | "rateLimit" | "accountSwitch";
+  reason?: "quota" | "rateLimit" | "accountSwitch" | "routingTimeout";
   retryAt?: number;
   autoRetryCount?: number;
 };
@@ -36,9 +36,9 @@ const settings: {
   {
     key: "autoResumeOn429",
     channel: "quota-recovery:set-auto-resume-429",
-    label: "429 后自动继续",
+    label: "限流或路由超时后自动继续",
     description:
-      "遇到 429 限流中断后，等待一段时间自动补发一条继续消息；连续中断最多自动继续 3 次。",
+      "遇到 429 限流或工作区路由发现超时后，等待一段时间自动补发一条继续消息；连续中断最多自动继续 3 次。",
   },
 ];
 type Invoke = (channel: string, ...args: unknown[]) => Promise<unknown>;
@@ -200,8 +200,9 @@ export function installQuotaRecovery(invoke: Invoke): void {
         const date = new Date(entry.interruptedAt);
         meta.textContent = `${Number.isNaN(date.getTime()) ? "中断时间未知" : date.toLocaleString()} · ${statusLabels[entry.status] || entry.status}`;
         if (entry.reason === "accountSwitch") meta.textContent += " · 换号中断";
-        if (entry.reason === "rateLimit") {
-          meta.textContent += " · 429 限流";
+        if (entry.reason === "rateLimit" || entry.reason === "routingTimeout") {
+          meta.textContent +=
+            entry.reason === "routingTimeout" ? " · 路由发现超时" : " · 429 限流";
           if (typeof entry.autoRetryCount === "number") {
             meta.textContent += ` · 已自动尝试 ${entry.autoRetryCount}/3 次`;
           }
@@ -338,7 +339,7 @@ export function installQuotaRecovery(invoke: Invoke): void {
     title.textContent = "继续中断任务";
     const description = document.createElement("p");
     description.textContent =
-      "选择因额度不足、换号或 429 限流中断的任务，统一发送继续消息。额度不足时，请先换好账号。";
+      "选择因额度不足、换号、429 限流或路由发现超时中断的任务，统一发送继续消息。额度不足时，请先换好账号。";
     const settingRows = document.createElement("div");
     settingInputs.clear();
     for (const { key, channel, label, description } of settings) {

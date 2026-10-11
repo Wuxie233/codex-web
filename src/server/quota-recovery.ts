@@ -5,6 +5,8 @@ import { hasUnfinishedTurn } from "./unfinished-turn";
 import {
   RATE_LIMIT_CONTINUATION,
   RATE_LIMIT_DELAYS,
+  ROUTING_TIMEOUT_CONTINUATION,
+  isTimedRecovery,
   recoveryReason,
   recoveryClock,
   type RecoveryReason,
@@ -222,7 +224,7 @@ export class QuotaRecovery {
           entry.detail = "服务已重启，需核对发送结果";
         }
         this.entries.set(entry.id, entry);
-        if (entry.reason === "rateLimit" && entry.status === "unknown") {
+        if (isTimedRecovery(entry.reason) && entry.status === "unknown") {
           const chain = this.rateChains.get(
             this.key(entry.hostId, entry.threadId),
           );
@@ -329,7 +331,7 @@ export class QuotaRecovery {
     if (!this.autoResumeOn429 || this.disposed) return;
     for (const entry of this.entries.values()) {
       if (
-        entry.reason !== "rateLimit" ||
+        !isTimedRecovery(entry.reason) ||
         entry.status !== "pending" ||
         entry.retryAt === undefined ||
         this.rateTimers.has(entry.id) ||
@@ -351,7 +353,7 @@ export class QuotaRecovery {
               quotaRevision,
             });
           })().catch(() => {
-            this.scanError = "限流任务暂时无法继续，请刷新后检查。";
+            this.scanError = "自动续发任务暂时无法继续，请刷新后检查。";
           });
         },
         Math.max(0, entry.retryAt - this.clock.now()),
@@ -366,7 +368,7 @@ export class QuotaRecovery {
       this.autoResumeOn429 &&
       generation === this.rateGeneration &&
       quotaRevision === this.quotaRevision &&
-      entry.reason === "rateLimit" &&
+      isTimedRecovery(entry.reason) &&
       entry.status === "pending" &&
       entry.retryAt !== undefined &&
       entry.retryAt <= this.clock.now() &&
@@ -554,7 +556,7 @@ export class QuotaRecovery {
       .filter(
         (entry) =>
           entry.hostId === attempt.host &&
-          entry.reason !== "rateLimit" &&
+          !isTimedRecovery(entry.reason) &&
           (entry.reason !== "accountSwitch" || attempt.includeUnfinished) &&
           ["pending", "failed"].includes(entry.status),
       )
@@ -591,7 +593,7 @@ export class QuotaRecovery {
     if (previous) {
       if (
         reason === "quota" &&
-        previous.reason === "rateLimit" &&
+        isTimedRecovery(previous.reason) &&
         !["sending", "unknown", "resumed"].includes(previous.status)
       ) {
         previous.reason = "quota";
@@ -604,7 +606,7 @@ export class QuotaRecovery {
     }
     const key = this.key(host, thread);
     let chain = this.rateChains.get(key);
-    if (reason === "rateLimit") {
+    if (isTimedRecovery(reason)) {
       if (!chain) {
         chain = { count: 0, failedTurnId: turn };
         this.rateChains.set(key, chain);
@@ -621,7 +623,7 @@ export class QuotaRecovery {
       interruptedAt: time,
       status: "pending",
       reason,
-      ...(reason === "rateLimit"
+      ...(isTimedRecovery(reason)
         ? {
             autoRetryCount: chain!.count,
             retryAt:
@@ -773,7 +775,7 @@ export class QuotaRecovery {
         state.blocked = true;
         for (const entry of this.entries.values())
           if (
-            entry.reason === "rateLimit" &&
+            isTimedRecovery(entry.reason) &&
             this.key(entry.hostId, entry.threadId) === chainKey
           )
             delete entry.retryAt;
@@ -875,16 +877,16 @@ export class QuotaRecovery {
       const last = thread.turns?.at(-1);
       if (
         !last ||
-        (entry.reason === "rateLimit" &&
+        (isTimedRecovery(entry.reason) &&
           (last.status !== "failed" ||
-            recoveryReason(last.error) !== "rateLimit"))
+            recoveryReason(last.error) !== entry.reason))
       ) {
         entry.status = "skipped";
         entry.detail = "父任务没有可恢复的回合";
         continue;
       }
       const continued = (last.startedAt ?? 0) * 1000 > entry.interruptedAt;
-      if (entry.reason === "rateLimit" && !continued) {
+      if (isTimedRecovery(entry.reason) && !continued) {
         this.reconcileRateChain(entry.hostId, thread);
         const rootKey = this.key(entry.hostId, thread.id);
         // The directly writable root owns the budget. Child-local metadata must
@@ -1105,7 +1107,7 @@ export class QuotaRecovery {
         ? (last.status === "failed" &&
             recoveryReason(last.error) === "accountSwitch") ||
           (await this.unfinished(entry.hostId, thread))
-        : entry.sourceThreadId && entry.reason !== "rateLimit"
+        : entry.sourceThreadId && !isTimedRecovery(entry.reason)
           ? ["failed", "completed"].includes(last.status)
           : last.status === "failed" &&
             recoveryReason(last.error) === (entry.reason ?? "quota"))
@@ -1133,7 +1135,7 @@ export class QuotaRecovery {
         if (!entry || !["pending", "failed"].includes(entry.status)) continue;
         if (
           automatic &&
-          (entry.reason === "rateLimit" ||
+          (isTimedRecovery(entry.reason) ||
             (entry.reason === "accountSwitch" && !automatic.includeUnfinished))
         )
           continue;
@@ -1229,8 +1231,10 @@ export class QuotaRecovery {
                     text:
                       entry.reason === "accountSwitch"
                         ? ACCOUNT_SWITCH_CONTINUATION
-                        : entry.reason === "rateLimit"
-                          ? RATE_LIMIT_CONTINUATION
+                        : isTimedRecovery(entry.reason)
+                          ? entry.reason === "routingTimeout"
+                            ? ROUTING_TIMEOUT_CONTINUATION
+                            : RATE_LIMIT_CONTINUATION
                           : CONTINUATION,
                     text_elements: [],
                   },
