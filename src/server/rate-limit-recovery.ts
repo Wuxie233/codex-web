@@ -38,13 +38,14 @@ export function recoveryReason(error: unknown): RecoveryReason | undefined {
   if (info === "rateLimitExceeded") return "rateLimit";
   if (status429) return "rateLimit";
   if (info !== undefined && info !== null && info !== "other") return undefined;
-  // Account-specific model access can change after login. Wait for an account
+  // Model access and workspace routing auth can change after login. Wait for an account
   // switch/reconnect; this is not a transient 429 and must not use timed retries.
   if (
-    strings.some((s) =>
-      /The '[^'\r\n]+' model is not supported when using Codex with a ChatGPT account\./.test(
-        s,
-      ),
+    strings.some(
+      (s) =>
+        /The '[^'\r\n]+' model is not supported when using Codex with a ChatGPT account\./.test(
+          s,
+        ) || s.includes("workspace routing discovery unauthorized (401)"),
     )
   )
     return "accountSwitch";
