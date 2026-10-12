@@ -1,11 +1,51 @@
 --- a/.vite/build/main-C5K7o1Hr.js
 +++ b/.vite/build/main-C5K7o1Hr.js
-@@ -136366,6 +136366,36 @@
+@@ -135731,5 +135731,32 @@
+   async callDynamicAppTool(e, t) {
+     t.throwIfAborted();
++    if (e.params?.namespace === `codex_app`) {
++      if (e.params.tool === `send_message_to_thread` && globalThis.__codexThreadMessages)
++        return globalThis.__codexThreadMessages.send(e.hostId, e.params, t);
++      const result = await globalThis.__codexThreadQueries?.handle(e.hostId, e.params, t);
++      if (result != null) return result;
++      // Worktree creation remains native. Wait only before dispatch so a browser
++      // reconnecting after restart can recover without replaying a creation.
++      if (e.params.tool === `create_thread`) {
++        const ready = () => [...this.readyAppViewWebContentsIds].some((id) => {
++          const contents = l.webContents.fromId(id);
++          return this.appViewsByWebContentsId.has(id) && contents != null && !contents.isDestroyed();
++        });
++        for (let attempt = 0; !ready() && attempt < 120; attempt++) {
++          await new Promise((resolve, reject) => {
++            const aborted = () => { clearTimeout(timer); reject(t.reason ?? Error(`App tool call aborted`)); };
++            const timer = setTimeout(() => { t.removeEventListener(`abort`, aborted); resolve(); }, 250);
++            t.addEventListener(`abort`, aborted, { once: !0 });
++            if (t.aborted) { t.removeEventListener(`abort`, aborted); aborted(); }
++          });
++          t.throwIfAborted();
++        }
++        if (!ready()) return {
++          success: false,
++          contentItems: [{ type: `inputText`, text: `Task creation was not dispatched: no app window reconnected within 30 seconds. Reconnect a Codex Web page before retrying this creation.` }],
++        };
++      }
++    }
+     const primary = this.options.windowManager.getPrimaryWindow()?.webContents.id;
+     const candidates = [
+       ...(primary == null ? [] : [primary]),
+@@ -136366,6 +136393,43 @@
        });
      }
      codexWebInstallRemoteBrowserTools(m, e, (message) => this.options.windowManager.sendMessageToAllWindows(message));
-+    // Dynamic app-server calls must share the bounded native app-tool bridge.
-+    // Browser stream ownership can suppress broadcast requests during reconnect.
++    const threadAdapter = {
++      readThread: (id) => m.readThread(id, { includeTurns: false }),
++      resumeThread: (id, options) => m.resumeThread(id, options),
++      request: (method, params) => m.sendAppServerRequest(method, params),
++    };
++    globalThis.__codexThreadMessages?.registerHost(e, threadAdapter);
++    globalThis.__codexThreadQueries?.registerHost(e, threadAdapter);
++    // One executor serves both the MCP pipe and dynamic app-server tool calls.
++    // Thread messaging and queries must not depend on a ready browser window.
 +    const appToolNames = new Set([`create_thread`, `list_projects`, `list_threads`, `read_thread`, `wait_threads`, `send_message_to_thread`]);
 +    const pendingAppTools = new Map();
 +    m.registerInternalNotificationHandler((notification) => {

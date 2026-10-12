@@ -21,6 +21,8 @@ import { glob } from "glob";
 import { rebaseRequestDeadlines } from "./request-deadline";
 import { registerDownloadRoute } from "./download";
 import { QuotaRecovery } from "./quota-recovery";
+import { ThreadMessages } from "./thread-message";
+import { ThreadQueries } from "./thread-query";
 import { ipcMain } from "./electron/index";
 
 type ServerOptions = {
@@ -734,6 +736,13 @@ async function startIpcBridgeServer(options: ServerOptions): Promise<void> {
     ),
   );
   Object.assign(globalThis, { __codexQuotaRecovery: recovery });
+  Object.assign(globalThis, {
+    __codexThreadMessages: new ThreadMessages(path.join(
+      process.env.CODEX_HOME || path.join(os.homedir(), ".codex"),
+      "codex-web-thread-messages.json",
+    )),
+    __codexThreadQueries: new ThreadQueries(),
+  });
   ipcMain.handle("quota-recovery:list", (_event, options) =>
     recovery.list(
       !(options !== null && typeof options === "object" &&

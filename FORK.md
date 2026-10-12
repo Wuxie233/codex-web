@@ -308,4 +308,26 @@ Validate with `npm run build:server`,
 `node --test tests/quota-recovery.test.cjs tests/quota-account-hook.test.cjs tests/rate-limit-recovery.test.cjs`
 and `npm run build:browser`.
 
-Dynamic app-server delegation and thread-query calls use the same bounded native app-tool bridge as MCP pipe calls. This avoids relying on a browser stream-owner broadcast during reconnection; an uncertain dispatched call is never replayed. Turn completion aborts outstanding calls.
+Dynamic app-server calls and MCP pipe calls share one executor. The server owns
+`send_message_to_thread`, `read_thread`, and `wait_threads`; these tools work without
+a ready browser window. Messaging uses the daemon's native tool-output follow-up
+(`turn/start` for both idle and active tasks), avoiding renderer-cached turn IDs.
+Source task IDs remain in the delegation message. Archived tasks and subagents
+still reject direct messages.
+
+`src/server/thread-message.ts` records delivery receipts in
+`$CODEX_HOME/codex-web-thread-messages.json`. The same source task and tool call ID
+returns its saved acknowledgement after restart. A crash or lost acknowledgement
+leaves an unknown delivery, which is never replayed automatically. Read the target
+task to reconcile it. New call IDs are new delivery attempts, not deduplicated
+business events. Target model and permission defaults are inherited unless the
+caller explicitly overrides the supported model or reasoning setting.
+
+`src/server/thread-query.ts` bounds daemon requests and uses stable wait cursors
+so restarting the Web service does not repeat an unchanged completion. Turn
+completion aborts outstanding calls. Worktree creation retains the native browser
+workflow and waits up to 30 seconds for a ready page before dispatch; if none
+reconnects, it reports that creation was not dispatched. It does not create new
+worktrees headlessly. Once native dispatch starts, uncertain outcomes are never
+replayed. Validate the server build and the existing app-tool lifecycle checks:
+`npm run build:server` and `node --test tests/app-tool-lifecycle.test.cjs`.
