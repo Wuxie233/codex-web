@@ -7,7 +7,8 @@ export type RecoveryReason =
   | "quota"
   | "rateLimit"
   | "accountSwitch"
-  | "routingTimeout";
+  | "routingTimeout"
+  | "authRefresh";
 // Both transient failures share the existing retry preference and per-thread budget.
 export function isTimedRecovery(reason: RecoveryReason | undefined): boolean {
   return reason === "rateLimit" || reason === "routingTimeout";
@@ -41,6 +42,12 @@ export function recoveryReason(error: unknown): RecoveryReason | undefined {
     )
   )
     return "quota";
+  if (
+    strings.some((s) =>
+      /Your access token could not be refreshed|\brefresh_token_(?:expired|reused|invalidated)\b/.test(s),
+    )
+  )
+    return "authRefresh";
   const info =
     error && typeof error === "object" && "codexErrorInfo" in error
       ? error.codexErrorInfo

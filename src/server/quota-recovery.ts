@@ -17,6 +17,8 @@ export { RATE_LIMIT_CONTINUATION } from "./rate-limit-recovery";
 
 export const ACCOUNT_SWITCH_CONTINUATION =
   "上一轮在换号时中断，未产生最终答复，现在账号已更新。请先核对当前进度和已有执行结果，再继续未完成的工作，避免重复执行已完成的操作。";
+export const AUTH_REFRESH_CONTINUATION =
+  "上一轮因登录凭据刷新失败而中断，现在登录状态已更新。请先核对当前进度和已有执行结果，再继续未完成的工作，避免重复执行已完成的操作。";
 export const CONTINUATION =
   "上一轮因账号额度不足而中断，现在账号已更新或额度已恢复，请继续之前未完成的工作。先核对当前进度和已有执行结果，再从中断处接着处理，避免重复执行已完成的操作。";
 type Status =
@@ -451,7 +453,13 @@ export class QuotaRecovery {
     if (
       !principal ||
       update.identity !== identityOf(principal) ||
-      !update.exhausted ||
+      (!update.exhausted &&
+        ![...this.entries.values()].some(
+          (entry) =>
+            entry.hostId === host &&
+            entry.reason === "authRefresh" &&
+            entry.status === "pending",
+        )) ||
       this.accountUsage.get(host) !== "available" ||
       update.generation !== (this.accountGenerations.get(host) ?? 0) ||
       update.quotaRevision !== this.quotaRevision
@@ -1231,11 +1239,13 @@ export class QuotaRecovery {
                     text:
                       entry.reason === "accountSwitch"
                         ? ACCOUNT_SWITCH_CONTINUATION
-                        : isTimedRecovery(entry.reason)
-                          ? entry.reason === "routingTimeout"
-                            ? ROUTING_TIMEOUT_CONTINUATION
-                            : RATE_LIMIT_CONTINUATION
-                          : CONTINUATION,
+                        : entry.reason === "authRefresh"
+                          ? AUTH_REFRESH_CONTINUATION
+                          : isTimedRecovery(entry.reason)
+                            ? entry.reason === "routingTimeout"
+                              ? ROUTING_TIMEOUT_CONTINUATION
+                              : RATE_LIMIT_CONTINUATION
+                            : CONTINUATION,
                     text_elements: [],
                   },
                 ],
