@@ -91,3 +91,52 @@ test('network failures are visible and create no download', async () => {
   assert.equal(f.blobs.length, 0);
   assert.equal(f.alerts.length, 1);
 });
+
+test('explicit download accepts documents and source while preserving path and host boundaries', async () => {
+  const f = fixture();
+  for (const path of ['/tmp/报告.pdf', '/tmp/report.docx', '/tmp/code.ts']) {
+    assert.equal(f.downloadLocalFile({path, openMode:'download'}), true);
+  }
+  for (const request of [
+    {path:'/tmp/report.pdf', hostId:'ssh:server'},
+    {path:'https://example.com/report.pdf'},
+    {path:'file://server/tmp/report.pdf'},
+    {path:'//server/report.pdf'},
+    {path:'report.pdf'},
+    {path:'file:///tmp/bad%00.pdf'},
+  ]) assert.equal(f.downloadLocalFile({...request, openMode:'download'}), false);
+  await new Promise(setImmediate);
+  assert.equal(f.downloads.length, 3);
+});
+
+test('actual file menu offers download first and dispatches the selected file once', () => {
+  const source = fs.readFileSync('scratch/asar/webview/assets/app-initial-236e1501144c.js', 'utf8');
+  const start = source.indexOf('function yBi(');
+  const end = source.indexOf('\nfunction bBi(', start);
+  assert(start > 0 && end > start, 'native menu anchors exist');
+  const f = fixture(), selected = [];
+  const context = {
+    window: {__ELECTRON_SHIM__: {
+      canDownloadLocalFile: request => f.localDownloadPath(request) !== null,
+      downloadLocalFile: request => selected.push(request),
+    }},
+    WD: 'host', yX: 'capability', KW: 'query', xA:'platform',
+    gBi: () => ({primaryTarget:null, visibleTargets:[]}),
+    K_: () => false, x_: () => false, hx: (cwd, path) => `${cwd}/${path}`,
+    iX: {}, XW: {}, ns: value => value, bBi: () => ({}),
+  };
+  vm.createContext(context);
+  vm.runInContext(source.slice(start, end), context);
+  const scope = {get: () => ({}), query:{getData: () => ({})}};
+  const menu = context.yBi(scope, {path:'报告.pdf', cwd:'/tmp', hostId:'local'});
+  assert.equal(menu[0].id, 'workspace-file-download');
+  assert.equal(menu[0].message.id, 'browserArtifact.download');
+  menu[0].onSelect();
+  assert.equal(selected.length, 1);
+  assert.equal(f.localDownloadPath(selected[0]), '/tmp/报告.pdf');
+  for (const request of [
+    {path:'/tmp/project', openMode:'workspace'},
+    {path:'/tmp/report.zip', hostId:'ssh:server'},
+    {path:'https://example.com/report.zip'},
+  ]) assert(!context.yBi(scope, request).some(item => item.id === 'workspace-file-download'));
+});

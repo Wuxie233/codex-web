@@ -2,7 +2,7 @@ import "./mobile-sidebar-actions";
 import { createStatsigStorage } from "./statsig-storage";
 import { installQuotaRecovery } from "./quota-recovery";
 import { installCreationRecovery } from "./creation-recovery";
-import { downloadLocalFile, type LocalFileOpenRequest } from "./downloads";
+import { downloadLocalFile, localDownloadPath, type LocalFileOpenRequest } from "./downloads";
 import {
   mapBrowserPathToInitialRoute,
   mapMemoryPathToBrowserPath,
@@ -115,6 +115,7 @@ type StatsigGateEvaluation = {
 type ElectronShimState = {
   statsigStorage?: ReturnType<typeof createStatsigStorage>;
   downloadLocalFile?: (request: LocalFileOpenRequest) => boolean;
+  canDownloadLocalFile?: (request: LocalFileOpenRequest) => boolean;
   initialRoute?: string;
   initialSidebarState?: boolean;
   closeSidebar?: () => void;
@@ -376,6 +377,7 @@ const initialSidebarState = !mobileMediaQuery.matches;
 const electronShim = (window.__ELECTRON_SHIM__ ??= {});
 electronShim.statsigStorage = createStatsigStorage();
 electronShim.downloadLocalFile = downloadLocalFile;
+electronShim.canDownloadLocalFile = (request) => localDownloadPath(request) !== null;
 const buildFlavor: "prod" | "dev" | "agent" | string = "prod";
 
 Object.assign(globalThis, {

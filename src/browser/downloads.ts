@@ -27,7 +27,7 @@ export function localDownloadPath(request: LocalFileOpenRequest): string | null 
     path = `${request.cwd.replace(/\/$/, "")}/${path}`;
   }
   if (!path.startsWith("/") || path.startsWith("//") || path.includes("\0")) return null;
-  return downloadableArchive.test(path) ? path : null;
+  return request.openMode === "download" || downloadableArchive.test(path) ? path : null;
 }
 
 export function downloadLocalFile(request: LocalFileOpenRequest): boolean {

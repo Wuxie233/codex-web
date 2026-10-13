@@ -1,6 +1,6 @@
 --- a/webview/assets/app-initial-236e1501144c.js
 +++ b/webview/assets/app-initial-236e1501144c.js
-@@ -292963,6 +292963,7 @@
+@@ -293133,6 +293133,7 @@
    jRi(e).catch(() => void 0);
  }
  async function jRi(e) {
@@ -8,3 +8,17 @@
    return lx(iX.openIn.open(e));
  }
  var MRi,
+@@ -294214,6 +294215,13 @@
+         }));
+     };
+   return (
++    u !== `workspace` &&
++      window.__ELECTRON_SHIM__?.canDownloadLocalFile?.({ path: f, cwd: i, hostId: o, openMode: `download` }) &&
++      _.push({
++        id: `workspace-file-download`,
++        message: ns({ id: `browserArtifact.download`, defaultMessage: `Download` }),
++        onSelect: () => window.__ELECTRON_SHIM__.downloadLocalFile({ path: f, cwd: i, hostId: o, openMode: `download` }),
++      }),
+     b &&
+       _.push({
+         id: v ? `workspace-file-view-file` : `workspace-file-view-browser`,
