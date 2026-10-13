@@ -1,0 +1,347 @@
+--- a/.vite/build/main-C5K7o1Hr.js
++++ b/.vite/build/main-C5K7o1Hr.js
+@@ -7971,6 +7971,110 @@
+ function ol(e, t) {
+   return e.reduce((e, n, r) => e.then(() => t(n, r)), Promise.resolve());
+ }
++async function webReadAccountGate(connection, gateName, getStatsigBootstrapContext, accountContext) {
++  let auth = accountContext?.auth ?? await connection.getAccount();
++  let principal = accountContext?.principal ?? await connection.getAuthenticatedPrincipal();
++  if (auth.account?.type !== `chatgpt` || principal == null)
++    throw Error(`Account gate unavailable: authenticated ChatGPT principal missing`);
++  let enterprise = [`business`, `enterprise`, `enterprise_cbp_usage_based`,
++    `enterprise_cbp_automation`, `deprecated_enterprise`, `hc`, `finserv`, `ent26`,
++    `education`, `edu_plus`, `edu_pro`, `edu`, `deprecated_edu`, `k12`, `quorum`]
++    .includes(auth.account.planType);
++  let settings = accountContext?.settings;
++  if (settings == null && enterprise) {
++    let response = await dC({
++      action: `read account feature policy`, appServerClient: connection,
++      desktopApiOptions: kR, method: `GET`,
++      path: `/accounts/${encodeURIComponent(principal.accountId)}/settings`,
++      mapNotFoundToFeatureUnavailable: !1,
++    });
++    settings = await response.json();
++  }
++  // Match the UI bootstrap and account-scoped beta preference without windows.
++  let { betaPreferences, ...bootstrapContext } = await getStatsigBootstrapContext();
++  let readBootstrap = async (betaEnabled) => {
++    let bootstrap = await dC({
++      action: `read local automation permission gate`,
++      appServerClient: connection,
++      desktopApiOptions: kR,
++      method: `POST`,
++      path: `/wham/statsig/bootstrap`,
++      headers: { "Content-Type": `application/json` },
++      body: JSON.stringify({ ...bootstrapContext, ...(betaEnabled ? { desktop_app_beta_enabled: !0 } : {}) }),
++      mapNotFoundToFeatureUnavailable: !1,
++    });
++    let payload = JSON.parse((await bootstrap.json()).statsigPayload);
++    if (payload.user?.userID !== principal.userId ||
++        payload.user?.customIDs?.account_id !== principal.accountId)
++      throw Error(`Account gate unavailable: bootstrap identity mismatch`);
++    return payload.response_format === `init-v2`
++      ? new (mS().V2InitializeContainer)(payload)
++      : new (pS().V1InitializeContainer)(payload);
++  };
++  let values = await readBootstrap(!1);
++  let betaPolicy = enterprise ? `blocked` : `optional_default_off`;
++  if (enterprise && settings.desktop_app_beta_policy != null &&
++      (settings.permissions == null || settings.permissions.includes(`chatgpt.workspace.feature.3957595485.access`)))
++    betaPolicy = settings.desktop_app_beta_policy;
++  let betaEnabled = values.getGate(`3957595485`)?.value === !0 &&
++    (betaPolicy === `required` ||
++      ([`optional_default_off`, `optional_default_on`].includes(betaPolicy) &&
++        (betaPreferences[principal.accountId] ?? betaPolicy === `optional_default_on`)));
++  if (betaEnabled) values = await readBootstrap(!0);
++  let gate = values.getGate(gateName);
++  if (typeof gate?.value !== `boolean`)
++    throw Error(`Account gate unavailable: permission gate missing`);
++  let current = await connection.getAuthenticatedPrincipal();
++  if (current?.accountId !== principal.accountId || current?.userId !== principal.userId)
++    throw Error(`Account gate unavailable: account changed during lookup`);
++  return gate.value;
++}
++async function webLocalAutomationCapability(connection, host, getStatsigBootstrapContext) {
++  if (host.kind !== `local`) return !1;
++  let cursor = null, enabled = !1;
++  do {
++    let page = await connection.sendAppServerRequest(`experimentalFeature/list`, {
++      cursor, limit: 100,
++    });
++    let feature = page.data.find((entry) => entry.name === `in_app_local_automation`);
++    if (feature != null) { enabled = feature.enabled === !0; break; }
++    cursor = page.nextCursor;
++  } while (cursor != null);
++  if (!enabled) return !1;
++  let auth = await connection.getAccount();
++  if (auth.requiresOpenaiAuth === !1) return !0;
++  if (auth.account?.type === `apiKey` || auth.account?.type === `amazonBedrock`) return !0;
++  if (auth.account?.type !== `chatgpt`) return !1;
++  if ([`free`, `go`, `plus`, `prolite`, `pro`, `promax`].includes(auth.account.planType)) return !0;
++  let principal = await connection.getAuthenticatedPrincipal();
++  if (principal == null) throw Error(`Automation entitlement unavailable: authenticated principal missing`);
++  let response = await dC({
++    action: `read local automation entitlement`,
++    appServerClient: connection,
++    desktopApiOptions: kR,
++    method: `GET`,
++    path: `/accounts/${encodeURIComponent(principal.accountId)}/settings`,
++    mapNotFoundToFeatureUnavailable: !1,
++  });
++  let settings = await response.json();
++  if (settings.beta_settings?.wham_local_access !== !0)
++    throw Error(`Local automations are disabled by workspace policy`);
++  let enterprise = [`business`, `enterprise`, `enterprise_cbp_usage_based`,
++    `enterprise_cbp_automation`, `deprecated_enterprise`, `hc`, `finserv`, `ent26`,
++    `education`, `edu_plus`, `edu_pro`, `edu`, `deprecated_edu`, `k12`, `quorum`]
++    .includes(auth.account.planType);
++  if (!enterprise) {
++    let current = await connection.getAuthenticatedPrincipal();
++    if (current?.accountId !== principal.accountId || current?.userId !== principal.userId)
++      throw Error(`Automation entitlement unavailable: account changed during lookup`);
++    return !0;
++  }
++  let enabledGate = await webReadAccountGate(connection, `770071981`, getStatsigBootstrapContext,
++    { auth, principal, settings });
++  if (enabledGate && !settings.permissions?.includes(`chatgpt.workspace.feature.codex-local-automation.access`))
++    throw Error(`Local automations are disabled by workspace policy`);
++  return !0;
++}
+ function sl({
+   appVersion: e,
+   appServerConnectionRegistry: t,
+@@ -7986,30 +8090,29 @@
+   repoRoot: f = process.cwd(),
+   tickMs: p = Pc,
+   maxPerTick: m = Ic,
++  getStatsigBootstrapContext,
+ }) {
+   let h = !1,
+     g = !1,
+     _ = !1,
+-    v = !1,
+     y,
+     b = new Set(),
+-    x = new Map(),
+-    S = new Map(),
+-    C = new Map(),
+     w = async () => {
+-      if (!(_ || !v)) {
++      if (!(_ || h)) {
+         _ = !0;
+         try {
+-          let p = t.getConnection(c.hostConfig.id),
+-            h = Date.now(),
++          let p = t.getConnection(c.hostConfig.id);
++          if (!(await webLocalAutomationCapability(p, c.hostConfig, getStatsigBootstrapContext))) return;
++          if (h) return;
++          let runAt = Date.now(),
+             g = n
+-              .mr(h, m + b.size)
++              .mr(runAt, m + b.size)
+               .filter((e) => !b.has(e.id))
+               .slice(0, m);
+           await Promise.all(
+             g.map(async (t) => {
+               try {
+-                if (t.lastRunAt != null && t.lastRunAt + Fc > h) {
++                if (t.lastRunAt != null && t.lastRunAt + Fc > runAt) {
+                   n.vr(t.id, t.lastRunAt + Fc);
+                   return;
+                 }
+@@ -8017,11 +8120,8 @@
+                   (b.add(t.id),
+                     hl({
+                       automation: t,
+-                      now: h,
++                      now: runAt,
+                       appServerConnection: p,
+-                      heartbeatThreadRendererStates: x,
+-                      heartbeatThreadCollaborationModes: S,
+-                      heartbeatThreadPermissions: C,
+                     })
+                       .catch((e) => {
+                         Wc().warning(`Scheduled run failed`, {
+@@ -8034,7 +8134,7 @@
+                       }));
+                   return;
+                 }
+-                let m = ll({ automation: t, now: h });
++                let m = ll({ automation: t, now: runAt });
+                 (n.hr(t.id, m),
+                   await ul({
+                     appVersion: e,
+@@ -8093,26 +8193,11 @@
+       h ||
+         ((h = !0),
+         y != null && clearInterval(y),
+-        b.clear(),
+-        x.clear(),
+-        S.clear(),
+-        C.clear());
++        b.clear());
+     },
+-    setLocalAutomationsCapability: (e) => {
+-      h || v === e || ((v = e), g && e && T());
+-    },
+-    setHeartbeatThreadRendererState: (e) => {
+-      if (h) return;
+-      let t = e.threadId?.trim() ?? ``;
+-      t.length !== 0 &&
+-        (x.set(t, {
+-          isEligible: e.isEligible,
+-          reason: e.reason,
+-          updatedAtMs: Date.now(),
+-        }),
+-        e.collaborationMode != null && S.set(t, e.collaborationMode),
+-        e.permissions == null ? C.delete(t) : C.set(t, e.permissions));
+-    },
++    // Compatibility notification only; execution capability is daemon-owned.
++    setLocalAutomationsCapability: () => {},
++    setHeartbeatThreadRendererState: () => {},
+   };
+ }
+ async function cl({
+@@ -8559,44 +8644,7 @@
+       }));
+     return;
+   }
+-  let l = Jc({ automation: e, thread: c }),
+-    u = Cl({
+-      expectedThreadId: e.targetThreadId,
+-      heartbeatThreadRendererStates: i,
+-    });
+-  if (u != null) {
+-    let r = Xc({ nextScheduledRunAt: s.nextScheduledRunAt, now: t });
+-    (n.vr(e.id, r),
+-      Wc().debug(`Heartbeat automation blocked by renderer state`, {
+-        safe: {
+-          automationId: e.id,
+-          targetThreadId: e.targetThreadId,
+-          blockReason: u,
+-          nextRunAt: r,
+-          nextCooldownAt: l,
+-          ...s,
+-        },
+-        sensitive: {},
+-      }));
+-    return;
+-  }
+-  let d = Qc(Sl(a, e.targetThreadId));
+-  if (d == null) {
+-    let r = Xc({ nextScheduledRunAt: s.nextScheduledRunAt, now: t });
+-    (n.vr(e.id, r),
+-      Wc().debug(`Heartbeat automation waiting for renderer mode state`, {
+-        safe: {
+-          automationId: e.id,
+-          targetThreadId: e.targetThreadId,
+-          blockReason: `missing_collaboration_mode`,
+-          nextRunAt: r,
+-          nextCooldownAt: l,
+-          ...s,
+-        },
+-        sensitive: {},
+-      }));
+-    return;
+-  }
++  let l = Jc({ automation: e, thread: c });
+   let f = await wl({ status: c.status, rolloutPath: c.path });
+   if (f != null) {
+     let r = Xc({ nextScheduledRunAt: s.nextScheduledRunAt, now: t });
+@@ -8646,12 +8694,8 @@
+       automation: e,
+       thread: c,
+       appServerConnection: r,
+-      collaborationMode: await $c({
+-        automation: e,
+-        appServerConnection: r,
+-        collaborationMode: d,
+-      }),
+-      permissions: o.get(e.targetThreadId) ?? null,
++      collaborationMode: null,
++      permissions: null,
+       waitForCompletion: !0,
+       runTrigger: `scheduled`,
+     }));
+@@ -8678,18 +8722,13 @@
+       rrule: e.rrule,
+       runTrigger: `run_now`,
+     }));
+-  let s = Qc(r);
+-  if (s == null) throw Error(`Heartbeat thread mode is still loading.`);
++  // The daemon retains the thread's collaboration mode across Web restarts.
+   await _l({
+     automation: e,
+     thread: a,
+     appServerConnection: t,
+-    collaborationMode: await $c({
+-      automation: e,
+-      appServerConnection: t,
+-      collaborationMode: s,
+-    }),
+-    permissions: i,
++    collaborationMode: null,
++    permissions: null,
+     waitForCompletion: !1,
+     runTrigger: `run_now`,
+   });
+@@ -8704,7 +8743,7 @@
+   runTrigger: o,
+ }) {
+   let s = await vl({ thread: t, appServerConnection: n }),
+-    c = i ?? (await yl({ appServerConnection: n, cwd: s.cwd })),
++    c = s.permissions,
+     l = bl(e);
+   await El({
+     automation: e,
+@@ -8730,6 +8769,11 @@
+     cwd: n.thread.cwd || n.cwd || e.cwd,
+     path: n.thread.path ?? e.path,
+     sessionId: n.thread.sessionId,
++    permissions: {
++      approvalPolicy: n.approvalPolicy,
++      approvalsReviewer: n.approvalsReviewer,
++      sandboxPolicy: n.sandbox,
++    },
+   };
+ }
+ async function yl({ appServerConnection: e, cwd: t }) {
+@@ -154981,8 +155025,29 @@
+               ),
+           ));
+       }));
++  let automationAppSessionId = require(`node:crypto`).randomUUID();
++  let getAutomationStatsigBootstrapContext = async () => ({
++      betaPreferences: z.globalState.get(n.Sc.DESKTOP_APP_BETA_PREFERENCES_BY_ACCOUNT_ID) ?? {},
++      app_session_id: automationAppSessionId,
++      app_version: E,
++      brand_name: `chatgpt`,
++      build_flavor: V.options.buildFlavor,
++      locale: l.app.getLocale(),
++      stable_id: await V.statsig.getStableId(),
++      system_name: require(`node:os`).type(),
++      system_version: require(`node:os`).release(),
++      window_type: `electron`,
++    });
++  globalThis.__codexReadAccountGate = (connection, gateName) =>
++    webReadAccountGate(connection, gateName, getAutomationStatsigBootstrapContext);
++  globalThis.__codexAutomations?.configure({
++    capability: () => webLocalAutomationCapability(
++      V.appServerConnectionRegistry.getConnection(W), wc, getAutomationStatsigBootstrapContext),
++    request: (method, params) => V.fetchHandler.handlers[method](params),
++  });
+   let st = sl({
+     appVersion: E,
++    getStatsigBootstrapContext: getAutomationStatsigBootstrapContext,
+     appServerConnectionRegistry: V.appServerConnectionRegistry,
+     getDesktopFeatureAvailability: U,
+     gitManager: De.gitManager,
+@@ -155006,6 +155071,7 @@
+   });
+   (V.getMessageHandler().setAutomationSchedulerController(st),
+     L.add(st),
++    st.start(),
+     L.add(
+       Wn({
+         startupPhases: f,

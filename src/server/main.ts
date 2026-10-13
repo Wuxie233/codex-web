@@ -23,6 +23,15 @@ import { registerDownloadRoute } from "./download";
 import { QuotaRecovery } from "./quota-recovery";
 import { ThreadMessages } from "./thread-message";
 import { ThreadQueries } from "./thread-query";
+import { ThreadCreations } from "./thread-create";
+import { ThreadToolsService } from "./thread-tools";
+import { ThreadCoordinator } from "./thread-coordinator";
+import { ThreadManagementService } from "./thread-management";
+import { AutomationAuthority } from "./automation-authority";
+import { ThreadFollowUpQueue } from "./thread-follow-up-queue";
+import { ThreadForks } from "./thread-fork";
+import { ThreadHandoffs } from "./thread-handoff";
+import { ThreadInputState } from "./thread-input-state";
 import { ipcMain } from "./electron/index";
 
 type ServerOptions = {
@@ -736,12 +745,58 @@ async function startIpcBridgeServer(options: ServerOptions): Promise<void> {
     ),
   );
   Object.assign(globalThis, { __codexQuotaRecovery: recovery });
+  const creations = new ThreadCreations(path.join(
+    process.env.CODEX_HOME || path.join(os.homedir(), ".codex"),
+    "codex-web-thread-creations.json",
+  ));
+  const forks = new ThreadForks(path.join(
+    process.env.CODEX_HOME || path.join(os.homedir(), ".codex"), "codex-web-thread-forks.json",
+  ));
+  const handoffs = new ThreadHandoffs(path.join(
+    process.env.CODEX_HOME || path.join(os.homedir(), ".codex"), "codex-web-thread-handoffs.json",
+  ));
+  const management = new ThreadManagementService(path.join(
+    process.env.CODEX_HOME || path.join(os.homedir(), ".codex"), "codex-web-management-receipts.json",
+  ));
+  const coordinator = new ThreadCoordinator(creations, { forks, handoffs, management });
+  const inputState = new ThreadInputState();
+  const followUpQueue = new ThreadFollowUpQueue(path.join(
+    process.env.CODEX_HOME || path.join(os.homedir(), ".codex"),
+    "codex-web-follow-up-queue.json",
+  ));
   Object.assign(globalThis, {
     __codexThreadMessages: new ThreadMessages(path.join(
       process.env.CODEX_HOME || path.join(os.homedir(), ".codex"),
       "codex-web-thread-messages.json",
     )),
     __codexThreadQueries: new ThreadQueries(),
+    __codexThreadTools: new ThreadToolsService(),
+    __codexThreadManagement: management,
+    __codexAutomations: new AutomationAuthority(path.join(
+      process.env.CODEX_HOME || path.join(os.homedir(), ".codex"),
+      "codex-web-automation-receipts.json",
+    )),
+    __codexThreadCreations: creations,
+    __codexFollowUpQueue: followUpQueue,
+    __codexThreadInputGuard: inputState,
+    __codexThreadForks: forks,
+    __codexThreadHandoffs: handoffs,
+  });
+  const readCommand = (value: unknown) => {
+    if (value === null || typeof value !== "object" ||
+        !("method" in value) || typeof value.method !== "string") {
+      throw new Error("A command with a string method is required");
+    }
+    return { method: value.method, params: "params" in value ? value.params : undefined };
+  };
+  ipcMain.handle("codex-follow-up-queue:request", (_event, request) =>
+    followUpQueue.handle(readCommand(request)),
+  );
+  ipcMain.handle("codex-coordinator:request", (_event, request) => {
+    const command = readCommand(request);
+    return command.method === "codexWeb/thread/input/report"
+      ? inputState.handle(command.params)
+      : coordinator.handle("codex-web", command);
   });
   ipcMain.handle("quota-recovery:list", (_event, options) =>
     recovery.list(
@@ -759,7 +814,15 @@ async function startIpcBridgeServer(options: ServerOptions): Promise<void> {
   );
 
   const module = require(matches[0]!);
-  module.runMainAppStartup();
+  await module.runMainAppStartup();
+  await coordinator.listen(path.join(
+    process.env.CODEX_HOME || path.join(os.homedir(), ".codex"),
+    "codex-web-coordinator.sock",
+  ));
+  process.once("SIGTERM", () => {
+    followUpQueue.close();
+    void coordinator.close().finally(() => process.exit(0));
+  });
 }
 
 async function main(args: string[]) {

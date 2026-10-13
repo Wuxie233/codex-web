@@ -1,0 +1,126 @@
+--- a/webview/assets/app-initial-236e1501144c.js
++++ b/webview/assets/app-initial-236e1501144c.js
+@@ -165127,6 +165127,8 @@
+           return { status: `sent`, messageId: i.id, turnId: f.turnId };
+         }
+         async sendQueuedMessageNow(e, t, n) {
++          if (window.electronBridge?.serverFollowUpQueueRequest)
++            return window.electronBridge.serverFollowUpQueueRequest({ method: `sendNow`, params: { conversationId: e, messageId: t } });
+           let r = this.execution,
+             i = this.prepareMessage;
+           if (this.disposed || r == null || i == null)
+@@ -165165,6 +165167,10 @@
+           return t.turnId;
+         };
+         async #e(e, t, n) {
++          if (window.electronBridge?.serverFollowUpQueueRequest) {
++            const prepared = await this.prepareMessage({ conversationId: e, message: t, serverQueuePrepare: true }, `start`);
++            t = { ...t, serverSubmission: prepared.serverSubmission };
++          }
+           return (
+             await this.loadMessages(e),
+             await this.#c(e, (e) => this.#t(e, t, n), !1),
+@@ -165345,2 +165345,5 @@
+         #r() {
++          if (window.electronBridge?.serverFollowUpQueueRequest)
++            for (const threadId of this.messages.keys())
++              void this.refreshServerQueueMetadata(threadId).catch((error) => this.options.logger.warning(`Queue presentation refresh failed`, { safe: {}, sensitive: { error } }));
+           if (this.disposed) return;
+@@ -165381,8 +165387,40 @@
+             });
+           this.queueRefresh = t;
+         }
++        serverPreparing = new Set();
++        async refreshServerQueueMetadata(threadId) {
++          const request = window.electronBridge?.serverFollowUpQueueRequest;
++          if (!request) return;
++          const { deliveries } = await request({ method: `read`, params: { conversationId: threadId } });
++          if (!deliveries?.length) return;
++          const hostId = deliveries[0].hostId;
++          (window.__codexWebFollowUpMetadata ??= {})[JSON.stringify([hostId, threadId])] = deliveries;
++          await window.codexWebApplyCreationMetadata?.(hostId, threadId);
++        }
++        async prepareServerQueue(threadId, messages) {
++          if (this.serverPreparing.has(threadId) || !this.execution?.isClientReady(threadId)) return;
++          this.serverPreparing.add(threadId);
++          try {
++            for (const message of messages) {
++              if (message.serverSubmission || message.pausedReason && message.pausedReason !== `Waiting for a connected client to prepare the original queued message.`) continue;
++              try {
++                const prepared = await this.prepareMessage({ conversationId: threadId, message, serverQueuePrepare: true }, `start`);
++                await this.#c(threadId, (entries) => entries.map((entry) => entry.id === message.id
++                  ? { ...entry, pausedReason: undefined, serverSubmission: prepared.serverSubmission } : entry), false);
++              } catch (error) {
++                await this.#c(threadId, (entries) => entries.map((entry) => entry.id === message.id
++                  ? { ...entry, pausedReason: error instanceof Error ? error.message : String(error) } : entry), false);
++              }
++            }
++          } finally { this.serverPreparing.delete(threadId); }
++        }
+         #i() {
+           let e = this.readState();
++          if (window.electronBridge?.serverFollowUpQueueRequest) {
++            if (e) for (const [threadId, messages] of Object.entries(e))
++              void this.prepareServerQueue(threadId, messages).catch((error) => this.options.logger.warning(`Queue input preparation failed`, { safe: {}, sensitive: { error } }));
++            return;
++          }
+           if (e != null) for (let t of Object.keys(e)) this.#a(Gg(t));
+         }
+         #a(e) {
+@@ -165413,6 +165442,7 @@
+           }
+         }
+         async #o(e, t, n) {
++          if (window.electronBridge?.serverFollowUpQueueRequest) return;
+           if (this.readMessages(e)?.some((e) => bFt(e.context))) {
+             if (n == null) return;
+             throw Error(CFt);
+@@ -165558,2 +165558,4 @@
+         loadSubscribedMessages(e) {
++          if (window.electronBridge?.serverFollowUpQueueRequest)
++            void this.refreshServerQueueMetadata(e).catch((error) => this.options.logger.warning(`Queue presentation restore failed`, { safe: {}, sensitive: { error } }));
+           this.loadMessages(e).catch((e) => {
+@@ -165621,6 +165651,23 @@
+           await this.#c(e, () => t, !0);
+         };
+         async #c(e, t, n) {
++          if (window.electronBridge?.serverFollowUpQueueRequest) {
++            const request = window.electronBridge.serverFollowUpQueueRequest;
++            const change = this.pendingQueueWrites.then(async () => {
++              for (let attempt = 0; attempt < 5; attempt++) {
++                const { messages: before } = await request({ method: `read`, params: { conversationId: e } });
++                const messages = t(before);
++                bdn(messages);
++                const result = await request({ method: `replace`, params: { conversationId: e, before, messages } });
++                if (result.conflict) continue;
++                this.#l(e, result.messages);
++                return before;
++              }
++              throw Error(`The queue changed concurrently. Retry this edit.`);
++            });
++            this.pendingQueueWrites = change.catch(() => {});
++            return change;
++          }
+           if (this.disposed)
+             return Promise.reject(Error(`Queued message coordinator retired`));
+           let r = this.read(e).messages,
+@@ -487663,6 +487710,19 @@
+         },
+         r,
+       );
++      if (n.serverQueuePrepare === true) {
++        const conversation = t.getConversation(n.conversationId);
++        if (!conversation || !o.start) throw Error(`Queued input preparation requires the loaded task.`);
++        const capabilities = rcn({ conversationId: n.conversationId, clientUserMessageId: n.message.id,
++          runtime: t.runtime, filesystem: t.filesystem, tracing: t.tracing });
++        const prepared = await ncn(t, n.conversationId, o.start, n.message.id, `nested`, capabilities,
++          () => {}, t.storage.readValue.bind(t.storage)).prepare(conversation);
++        o.serverSubmission = { hostId: a.executionHostId, queuedDuringTurnId: ES(conversation)?.status === `inProgress` ? ES(conversation).turnId : undefined,
++          request: vRt(prepared.request, t.requestClient.getAppServerVersion()),
++          responseItems: o.start.context?.responseItems ?? [],
++          uiMetadata: o.start.context, workspaceCommit: prepared.workspaceCommit, pendingWorkspace: prepared.pendingWorkspace,
++          steer: o.steer };
++      }
+       return ((o.allowStartAfterNoActiveTurn = !1), o);
+     },
+     getQueueMode: async (e) => (

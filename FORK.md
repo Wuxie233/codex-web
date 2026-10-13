@@ -308,26 +308,75 @@ Validate with `npm run build:server`,
 `node --test tests/quota-recovery.test.cjs tests/quota-account-hook.test.cjs tests/rate-limit-recovery.test.cjs`
 and `npm run build:browser`.
 
-Dynamic app-server calls and MCP pipe calls share one executor. The server owns
-`send_message_to_thread`, `read_thread`, and `wait_threads`; these tools work without
-a ready browser window. Messaging uses the daemon's native tool-output follow-up
-(`turn/start` for both idle and active tasks), avoiding renderer-cached turn IDs.
-Source task IDs remain in the delegation message. Archived tasks and subagents
-still reject direct messages.
+Dynamic app-server calls and MCP pipe calls share the server executor. Task
+creation, discovery, messaging, queries and management do not require a ready
+browser window. The daemon owns execution and native thread identity; the Web
+service owns coordination commands and their durable receipts. A SPEC task still
+decides when to dispatch its next batch. The service does not infer completion
+policy or promote a business delegation into a native subagent relationship.
 
 `src/server/thread-message.ts` records delivery receipts in
-`$CODEX_HOME/codex-web-thread-messages.json`. The same source task and tool call ID
-returns its saved acknowledgement after restart. A crash or lost acknowledgement
-leaves an unknown delivery, which is never replayed automatically. Read the target
-task to reconcile it. New call IDs are new delivery attempts, not deduplicated
-business events. Target model and permission defaults are inherited unless the
-caller explicitly overrides the supported model or reasoning setting.
+`$CODEX_HOME/codex-web-thread-messages.json`. Messaging uses the daemon's native
+tool-output follow-up (`turn/start` for both idle and active tasks), avoiding
+renderer-cached turn IDs. Source task IDs remain in the delegation message.
+Archived tasks and subagents still reject direct messages. Reusing the same source
+task and tool call ID returns its saved acknowledgement; a new call ID is a new
+attempt, not a deduplicated business event. An uncertain dispatch is never replayed
+automatically. Target model and permission defaults remain inherited unless the
+caller explicitly overrides supported settings.
+
+`src/server/thread-create.ts` persists creation plans and receipts in
+`$CODEX_HOME/codex-web-thread-creations.json`. Workspace creation, native task
+creation, metadata assignment, response-item injection, the first turn and goal
+setup are distinct phases. Queued operations expose a stable temporary task ID;
+queries resolve it to the real task. Recovery reconciles uncertain side effects
+instead of creating another worktree or sending another turn. Agent-created tasks
+retain their source relation and queued completion notification. Human-created
+tasks have a client-scoped request ID and do not fabricate a source task. Human
+creation preserves configured custom models and leaves model validation to the
+daemon; the delegated-tool model catalog must not restrict native user input.
+
+`src/server/thread-coordinator.ts` exposes the same creation service to the Web
+IPC transport and a permission-restricted Unix socket at
+`$CODEX_HOME/codex-web-coordinator.sock`. The CodeCarry bridge forwards coordinator
+commands; it does not implement another creation engine. Explicit lack of protocol
+support permits a legacy client path. Lost replies or a temporarily unavailable
+coordinator require receipt lookup, not a second dispatch. The Web renderer keeps
+request indices for navigation recovery and reads attachment display metadata
+from the receipt when needed.
 
 `src/server/thread-query.ts` bounds daemon requests and uses stable wait cursors
-so restarting the Web service does not repeat an unchanged completion. Turn
-completion aborts outstanding calls. Worktree creation retains the native browser
-workflow and waits up to 30 seconds for a ready page before dispatch; if none
-reconnects, it reports that creation was not dispatched. It does not create new
-worktrees headlessly. Once native dispatch starts, uncertain outcomes are never
-replayed. Validate the server build and the existing app-tool lifecycle checks:
-`npm run build:server` and `node --test tests/app-tool-lifecycle.test.cjs`.
+so a Web restart does not repeat an unchanged completion. On daemon reconnect,
+the native adapter restores subscriptions for loaded, unarchived tasks. Global
+activation events also subscribe tasks activated by another client. Native resume
+re-delivers pending tool requests without starting a turn; the executor reuses
+in-flight calls and durable mutation receipts. Remote-host removal unregisters
+service adapters so a stale connection cannot block healthy hosts.
+
+Server-owned tool schemas are merged with the native tool catalog. Native tools
+that require a client keep their existing feature and account gates; a headless
+service does not claim those client capabilities. The automation scheduler reads
+native daemon capability and authenticated account settings on the server,
+including the native Statsig permission gate. Browser capability toggles and
+cached composer state do not authorize background execution.
+
+Fork and handoff operations use durable service receipts. Forks preserve native
+history selection and workspace metadata. Projectless tasks can lack workspace
+hints or output-directory metadata; forks preserve absent entries rather than
+writing null paths into the native state dictionaries. Handoffs preserve interruption, Git
+movement, destination setup and source archival as separate phases; uncertain
+writes are not repeated after a restart. Input preparation and queued sends must
+settle before moving a task. Pending pasted-text conversion saves the original
+input before processing, so a disappearing renderer is not treated as proof that
+there is no unfinished input.
+
+Follow-up queue acceptance requires the client to materialize its native input,
+including attachments and response items. Once accepted, server-side compare-and-
+swap updates and a durable consumer own dispatch. Older entries without prepared
+input remain intact until a client prepares them. Acknowledged sends are not
+requeued after interruption; an explicit native rejection is distinct from an
+unknown transport outcome. Display metadata is read back from delivery receipts.
+
+Validate the server and browser builds and the relevant existing lifecycle checks.
+Exercise restart and disconnected-client behavior against an isolated daemon;
+build success alone is not end-to-end or device acceptance.

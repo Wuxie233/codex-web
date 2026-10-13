@@ -1,6 +1,7 @@
 import "./mobile-sidebar-actions";
 import { createStatsigStorage } from "./statsig-storage";
 import { installQuotaRecovery } from "./quota-recovery";
+import { installCreationRecovery } from "./creation-recovery";
 import { downloadLocalFile, type LocalFileOpenRequest } from "./downloads";
 import {
   mapBrowserPathToInitialRoute,
@@ -419,6 +420,17 @@ if (initialRoute.browserPath) {
 }
 
 electronShim.initialSidebarState = initialSidebarState;
+let creationRecoveryPath: string | undefined;
+let stopCreationRecovery: (() => void) | undefined;
+function recoverDisplayedCreation(): void {
+  window.dispatchEvent(new Event("codex-web:navigation"));
+  if (creationRecoveryPath === window.location.pathname) return;
+  stopCreationRecovery?.();
+  creationRecoveryPath = window.location.pathname;
+  stopCreationRecovery = installCreationRecovery((request) =>
+    ipcRenderer.invoke("codex-coordinator:request", request),
+  );
+}
 electronShim.onMemoryNavigationChanged = (navigation) => {
   const path = navigation.location.pathname;
   if (
@@ -440,10 +452,12 @@ electronShim.onMemoryNavigationChanged = (navigation) => {
 
   if (window.location.pathname === browserPath.path) {
     window.history.replaceState(undefined, "", browserPath.path);
+    recoverDisplayedCreation();
     return;
   }
 
   window.history.pushState(undefined, "", browserPath.path);
+  recoverDisplayedCreation();
 };
 
 export const ipcRenderer = {
@@ -623,7 +637,13 @@ export const contextBridge = {
     if (_key === "electronBridge" && isRecord(_api)) {
       // No native window exists for Menu.popup on the web host. Omitting this
       // capability lets Desktop render its existing accessible browser menus.
-      const browserApi = { ..._api };
+      const browserApi: Record<string, unknown> = {
+        ..._api,
+        serverFollowUpQueueRequest: (request: unknown) =>
+          ipcRenderer.invoke("codex-follow-up-queue:request", request),
+        serverCoordinatorRequest: (request: unknown) =>
+          ipcRenderer.invoke("codex-coordinator:request", request),
+      };
       delete browserApi.showContextMenu;
       Reflect.set(window, _key, browserApi);
       return;

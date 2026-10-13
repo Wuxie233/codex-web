@@ -87,3 +87,25 @@ patch --batch --forward --strip 1 --directory scratch/asar < patches/webview-sta
 patch --batch --forward --strip 1 --directory scratch/asar < patches/first-turn-project-assignment.patch
 
 patch --batch --forward --strip 1 --directory scratch/asar < patches/main-dynamic-app-tool-routing.patch
+
+patch --batch --forward --strip 1 --directory scratch/asar < patches/main-thread-subscription-recovery.patch
+
+patch --batch --forward --strip 1 --directory scratch/asar < patches/main-thread-creation-adapter.patch
+
+patch --batch --forward --strip 1 --directory scratch/asar < patches/main-thread-management-adapter.patch
+
+patch --batch --forward --strip 1 --directory scratch/asar < patches/main-automation-authority.patch
+
+patch --batch --forward --strip 1 --directory scratch/asar < patches/webview-server-thread-creation.patch
+
+patch --batch --forward --strip 1 --directory scratch/asar < patches/main-thread-fork-adapter.patch
+patch --batch --forward --strip 1 --directory scratch/asar < patches/main-thread-handoff-adapter.patch
+patch --batch --forward --strip 1 --directory scratch/asar < patches/main-follow-up-queue-adapter.patch
+patch --batch --forward --strip 1 --directory scratch/asar < patches/webview-server-follow-up-queue.patch
+
+patch --batch --forward --strip 1 --directory scratch/asar < patches/main-thread-input-state.patch
+patch --batch --forward --strip 1 --directory scratch/asar < patches/webview-server-input-state.patch
+
+patch --batch --forward --strip 1 --directory scratch/asar < patches/main-thread-sidebar-adapter.patch
+
+patch --batch --forward --strip 1 --directory scratch/asar < patches/webview-server-thread-lifecycle.patch

@@ -1,0 +1,320 @@
+--- a/.vite/build/main-C5K7o1Hr.js
++++ b/.vite/build/main-C5K7o1Hr.js
+@@ -135146,6 +135146,317 @@
+       (e) => this.fetchHandler.getPinnedThreadIdsForWorktreeCleanup(e),
+       e.onAppEntrySource,
+     );
++    // Server-owned task creation and discovery; renderer connections are observers.
++    if (globalThis.__codexThreadCreations && globalThis.__codexThreadTools) {
++      const fetch = this.fetchHandler;
++      const connection = (hostId) => this.appServerConnectionRegistry.getConnection(hostId);
++      const client = (hostId) => fetch.getAppServerClientForHostIdOrThrow(hostId);
++      const readyThread = async (hostId, threadId) => {
++        const host = connection(hostId);
++        const read = () => host.readThread(threadId, { includeTurns: false });
++        let thread = await read();
++        if (thread?.id !== threadId) throw Error(`The task was not found on its recorded host`);
++        if (thread.parentThreadId != null || thread.source?.subAgent != null || thread.canAcceptDirectInput === false)
++          throw Error(`The target is a subagent or cannot accept direct input`);
++        // thread/read omits archive state; check its authoritative catalog before resume.
++        let cursor = null;
++        do {
++          const page = await host.sendAppServerRequest(`thread/list`, {
++            archived: true, cursor, limit: 100, sourceKinds: [], modelProviders: [],
++          });
++          if (!Array.isArray(page.data)) throw Error(`Unable to verify task archive state`);
++          if (page.data.some((entry) => entry.id === threadId))
++            throw Error(`The target task is archived; unarchive it before continuing`);
++          cursor = page.nextCursor ?? null;
++        } while (cursor != null);
++        if (thread.status?.type === `notLoaded`) {
++          // Leave model, permissions and instructions unset to retain persisted defaults.
++          await host.resumeThread(threadId, { cwd: thread.cwd, path: thread.path });
++          thread = await read();
++        }
++        if (![ `idle`, `active` ].includes(thread?.status?.type))
++          throw Error(`The target task is not ready to receive input`);
++        return host;
++      };
++      const projects = () => [
++        ...Object.values(this.projectsManager.getLocalProjects()).map((project) => ({
++          projectId: project.id, projectKind: `local`, hostId: `local`,
++          label: project.label ?? project.name ?? project.rootPaths[0] ?? project.id,
++          path: project.rootPaths[0] ?? null, rootPaths: project.rootPaths,
++        })),
++        ...this.projectsManager.getRemoteProjects().map((project) => ({
++          projectId: project.id, projectKind: `remote`, hostId: project.hostId,
++          label: project.label, path: project.remotePath, rootPaths: [project.remotePath],
++        })),
++      ];
++      const git = (hostId, method, params) => fetch.requestGitWorker({
++        method, params: { ...params, hostConfig: client(hostId).hostConfig,
++          operationSource: `worktree_pending_create` },
++      });
++      const xml = (value) => value.replaceAll(`&`, `&amp;`).replaceAll(`<`, `&lt;`).replaceAll(`>`, `&gt;`);
++      globalThis.__codexThreadTools.configureDiscovery({
++        projects,
++        isGitRepository: async (hostId, path) =>
++          (await fetch.gitManager.getWorktreeRepository(n.ko(path), client(hostId))) != null,
++        pinnedThreadIds: () => fetch.getPinnedThreadIdsForWorktreeCleanup(`local`),
++        threadProjectId: (threadId) =>
++          n.Ai(fetch.globalState.get(n.Sc.THREAD_PROJECT_ASSIGNMENTS))[threadId]?.projectId ?? null,
++      });
++      globalThis.__codexThreadCreations.registerAdapter({
++        prepare: async (args, source, operationId) => {
++          const isUser = source.kind === `user`;
++          const native = isUser ? args.nativeParams ?? {} : {};
++          const nativeFields = new Set([`input`, `responseItems`, `toolOutput`, `turnTrigger`, `commentAttachments`,
++            `mcpAppModelContextAttachments`, `collaborationMode`, `permissionsConfig`, `permissionSelection`, `approvalsReviewer`,
++            `useAppServerPermissionDefault`, `usePermissionSelection`, `config`, `configOverrides`, `memoryPreferences`,
++            `baseInstructions`, `additionalDeveloperInstructions`, `attachments`, `projectlessOutputDirectory`,
++            `cwd`, `workspaceRoots`, `workspaceKind`, `initialTitle`, `clientUserMessageId`, `multiAgentMode`,
++            `serviceTier`, `serviceName`, `projectAssignment`, `mode`, `threadStartKind`, `requiresThreadReferences`,
++            `skipFallbackConfigReadForProjectlessCwd`, `localTurnMetadata`, `sideConversation`, `threadSource`,
++            `cloudThreadPrototype`, `goal`, `dynamicTools`]);
++          if (Object.keys(native).some((key) => !nativeFields.has(key)))
++            throw Error(`Unsupported native task creation fields: ${Object.keys(native).filter((key) => !nativeFields.has(key)).join(`, `)}`);
++          if (native.sideConversation != null || native.cloudThreadPrototype === true ||
++              native.mode != null && native.mode !== `default` ||
++              native.threadStartKind != null && native.threadStartKind !== `default`)
++            throw Error(`This native conversation mode requires a server creation adapter before it can be dispatched`);
++          if (native.goal != null && (typeof native.goal.objective !== `string` ||
++              !native.goal.objective.trim() || native.goal.objective.length > 4000 || native.goal.status !== `active`))
++            throw Error(`Invalid task goal`);
++          const effort = isUser ? args.effort ?? native.collaborationMode?.settings?.reasoning_effort : args.thinking;
++          const explicit = (key) => Object.prototype.hasOwnProperty.call(args, key);
++          if (![ `project`, `projectless`, ...(isUser ? [`cwd`] : []) ].includes(args.target.type))
++            throw Error(`Server creation supports local and remote Codex projects and projectless tasks; ChatGPT Work cloud creation is unavailable here.`);
++          const project = args.target.type === `project`
++            ? projects().find((entry) => entry.projectId === args.target.projectId) : null;
++          if (args.target.type === `project` && !project) throw Error(`Unknown projectId: ${args.target.projectId}`);
++          const direct = isUser && args.target.type === `cwd`;
++          if (direct && (typeof args.target.cwd !== `string` || !args.target.cwd.trim()))
++            throw Error(`A direct workspace requires a cwd`);
++          const cwd = direct ? args.target.cwd : project?.path;
++          const hostId = project?.hostId ?? (direct ? args.target.hostId ?? source.hostId : `local`);
++          const environment = args.target.type === `project` || direct ? args.target.environment : null;
++          if (environment && ![`local`, `worktree`].includes(environment.type)) throw Error(`Invalid project environment`);
++          if (args.target.type === `project` && !environment) throw Error(`Project environment is required`);
++          const plan = { hostId, cwd: cwd ?? `~`, workspaceRoots: direct ? args.target.workspaceRoots ?? [cwd] : project?.rootPaths ?? [],
++            origin: isUser ? `user` : `agent`,
++            projectId: project?.projectId, projectKind: project?.projectKind,
++            title: args.title ?? native.initialTitle, nativeParams: native, threadParams: {}, turnParams: {}, preparedAt: Math.floor(Date.now() / 1000) };
++          if (!cwd) {
++            if (environment?.type === `worktree`) throw Error(`Worktree tasks require a project with a directory`);
++            // Directory allocation is a durable workspace phase, never read-only preparation.
++            plan.worktree = { kind: `projectless`, directoryName: args.target.directoryName,
++              prompt: isUser ? args.input.filter((item) => item.type === `text`).map((item) => item.text).join(`\n`) : args.prompt };
++          } else if (environment?.type === `worktree`) {
++            const metadata = await git(hostId, `stable-metadata`, { cwd: n.ko(plan.cwd) });
++            if (!metadata) throw Error(`Cannot create a worktree outside a Git repository`);
++            let state = environment.startingState;
++            if (state && ![`branch`, `working-tree`].includes(state.type)) throw Error(`Invalid worktree starting state`);
++            if (state?.type !== `working-tree`) {
++              const branchName = state?.branchName ?? (await git(hostId, `default-branch`, { root: metadata.root })).branch;
++              if (typeof branchName !== `string` || !branchName) throw Error(`No resolvable worktree starting branch`);
++              const resolved = await git(hostId, `resolve-worktree-starting-ref`, { root: metadata.root, ref: branchName });
++              if (resolved) state = { type: `branch`, branchName, remoteRef: resolved.remoteRef };
++              else {
++                if (state?.onMissing !== `create-branch`) throw Error(`Worktree starting ref does not exist: ${branchName}`);
++                const defaultBranch = (await git(hostId, `default-branch`, { root: metadata.root })).branch;
++                const base = defaultBranch && await git(hostId, `resolve-worktree-starting-ref`, { root: metadata.root, ref: defaultBranch });
++                if (!base) throw Error(`Cannot resolve the default branch for new worktree branch`);
++                state = { type: `branch`, branchName };
++                plan.createBranchFrom = base.ref;
++              }
++            }
++            plan.worktree = { kind: `git`, startingState: state,
++              localEnvironmentConfigPath: isUser ? environment.localEnvironmentConfigPath ?? null : null };
++          }
++          const requestedModel = args.model ?? native.collaborationMode?.settings?.model;
++          if (!isUser && (requestedModel != null || effort != null)) {
++            const models = (await connection(hostId).listModels({ limit: 100, includeHidden: false })).data;
++            const config = await connection(hostId).getUserSavedConfiguration(cwd ?? null);
++            const model = models.find((entry) => entry.model === (requestedModel ?? config.model ?? models.find((entry) => entry.isDefault)?.model));
++            if (!model || (effort != null && !model.supportedReasoningEfforts.some((entry) => entry.reasoningEffort === effort)))
++              throw Error(`Unsupported model or reasoning effort`);
++          }
++          plan.threadParams = { model: requestedModel ?? null, threadSource: isUser ? `user` : `agent_created_thread`,
++            ephemeral: false, experimentalRawEvents: false,
++            config: effort != null && (isUser || args.model == null) ? { model_reasoning_effort: effort } : {},
++            ...(isUser && (explicit(`serviceTier`) || Object.prototype.hasOwnProperty.call(native, `serviceTier`))
++              ? { serviceTier: explicit(`serviceTier`) ? args.serviceTier : native.serviceTier } : {}),
++            ...(project?.projectKind === `local` ? { webProjectAssignment: { projectKind: `local`, projectId: project.projectId } } : {}) };
++          plan.turnParams = isUser ? {
++            input: args.input,
++            ...Object.fromEntries([`toolOutput`, `turnTrigger`, `clientUserMessageId`, `multiAgentMode`, `collaborationMode`]
++              .filter((key) => Object.prototype.hasOwnProperty.call(native, key)).map((key) => [key, native[key]])),
++            ...(Object.prototype.hasOwnProperty.call(native, `serviceTier`) ? { serviceTier: native.serviceTier } : {}),
++            ...(explicit(`model`) ? { model: args.model } : {}),
++            ...(explicit(`effort`) ? { effort: args.effort } : {}),
++            ...(explicit(`serviceTier`) ? { serviceTier: args.serviceTier } : {}),
++          } : { input: [{ type: `text`, text_elements: [], text:
++            `<codex_delegation>\n  <source_thread_id>${xml(source.threadId)}</source_thread_id>\n  <input>${xml(args.prompt)}</input>\n</codex_delegation>` }],
++            turnTrigger: `app_tool_create_thread`,
++            ...(args.model == null ? {} : { collaborationMode: { mode: `default`, settings: {
++              model: args.model, reasoning_effort: args.thinking ?? `medium`, developer_instructions: null } } }) };
++          if (isUser) {
++            const memory = native.memoryPreferences;
++            plan.threadParams.config = {
++              ...(memory == null ? {} : { "memories.generate_memories": memory.generateMemories,
++                "memories.use_memories": memory.useMemories }),
++              ...(native.config ?? {}), ...(native.configOverrides ?? {}), ...plan.threadParams.config,
++            };
++            if (native.baseInstructions != null) plan.threadParams.baseInstructions = native.baseInstructions;
++            if (native.serviceName != null) plan.threadParams.serviceName = native.serviceName;
++            if (native.approvalsReviewer != null) plan.threadParams.approvalsReviewer = native.approvalsReviewer;
++            if (native.projectAssignment != null && !plan.projectId) {
++              plan.projectId = native.projectAssignment.projectId;
++              plan.projectKind = native.projectAssignment.projectKind;
++              if (plan.projectKind === `local`) plan.threadParams.webProjectAssignment = native.projectAssignment;
++            }
++          }
++          if (isUser && args.permissions != null) {
++            const allowed = new Set([`approvalPolicy`, `approvalsReviewer`, `sandbox`, `permissions`, `runtimeWorkspaceRoots`]);
++            if (typeof args.permissions !== `object` || Array.isArray(args.permissions) ||
++                Object.keys(args.permissions).some((key) => !allowed.has(key)))
++              throw Error(`Unsupported explicit thread permission fields`);
++            Object.assign(plan.threadParams, args.permissions);
++            plan.explicitPermissions = true;
++          }
++          return plan;
++        },
++        createWorktree: async (plan, operationId) => {
++          if (plan.worktree.kind === `projectless`) {
++            const paths = await fetch.handlers[`projectless-thread-cwd`]({
++              directoryName: plan.worktree.directoryName, prompt: plan.worktree.prompt,
++            });
++            return { cwd: paths.cwd, workspaceRoots: [paths.workspaceRoot],
++              projectlessOutputDirectory: paths.outputDirectory, projectlessWorkspaceRoot: paths.workspaceRoot };
++          }
++          if (plan.createBranchFrom) {
++            const result = await git(plan.hostId, `create-branch`, { branch: plan.worktree.startingState.branchName,
++              cwd: n.ko(plan.cwd), mode: `worktree`, startPoint: plan.createBranchFrom });
++            if (result.status === `error`) throw Error(result.error);
++          }
++          const worktree = await fetch.handlers[`worktree-create-managed`]({ hostId: plan.hostId,
++            cwd: plan.cwd, startingState: plan.worktree.startingState,
++            localEnvironmentConfigPath: plan.worktree.localEnvironmentConfigPath ?? null, streamId: operationId });
++          return { cwd: worktree.worktreeWorkspaceRoot, workspaceRoots: [worktree.worktreeWorkspaceRoot],
++            worktreeGitRoot: worktree.worktreeGitRoot };
++        },
++        startThread: async (plan) => {
++          const config = await connection(plan.hostId).getUserSavedConfiguration(plan.cwd);
++          const native = plan.nativeParams ?? {};
++          if (plan.origin === `user` && !plan.explicitPermissions && !native.useAppServerPermissionDefault) {
++            const selection = native.permissionSelection;
++            const permissions = native.permissionsConfig;
++            if (selection?.kind === `profile`) plan.threadParams.permissions = selection.profileId;
++            else if (selection?.kind === `agent-mode`) {
++              const chosen = n.bl(selection.agentMode, plan.workspaceRoots, config);
++              plan.threadParams.approvalPolicy = chosen.approvalPolicy;
++              plan.threadParams.approvalsReviewer = chosen.approvalsReviewer;
++              plan.threadParams.permissions = chosen.activePermissionProfile?.id;
++              if (plan.threadParams.permissions == null) {
++                const modes = { dangerFullAccess: `danger-full-access`, readOnly: `read-only`, workspaceWrite: `workspace-write` };
++                plan.threadParams.sandbox = modes[chosen.sandboxPolicy.type] ?? null;
++                plan.turnParams.sandboxPolicy = chosen.sandboxPolicy;
++              }
++            } else if (permissions != null && selection?.kind !== `server-default`) {
++              plan.threadParams.approvalPolicy = permissions.approvalPolicy;
++              plan.threadParams.approvalsReviewer = permissions.approvalsReviewer;
++              if (permissions.activePermissionProfile != null) plan.threadParams.permissions = permissions.activePermissionProfile.id;
++              else {
++                const modes = { dangerFullAccess: `danger-full-access`, readOnly: `read-only`, workspaceWrite: `workspace-write` };
++                plan.threadParams.sandbox = modes[permissions.sandboxPolicy.type] ?? null;
++                plan.turnParams.sandboxPolicy = permissions.sandboxPolicy;
++              }
++            }
++          }
++          let instructions = await fetch.getProjectAwareDeveloperInstructions({
++            baseInstructions: config.developer_instructions, cwd: plan.cwd, hostId: plan.hostId,
++            threadToolsEnabled: true, sidebarSectionToolsEnabled: true,
++          });
++          if (native.additionalDeveloperInstructions != null)
++            instructions = [instructions, native.additionalDeveloperInstructions].filter(Boolean).join(`\n\n`);
++          const nativeTools = native.dynamicTools ?? await this.messageHandler
++            .requestDynamicToolsForThreadStart(null, true, `default`, plan.hostId);
++          const response = await connection(plan.hostId).startThread({ ...plan.threadParams, cwd: plan.cwd,
++            ...(plan.origin === `user` && !Object.prototype.hasOwnProperty.call(plan.threadParams, `runtimeWorkspaceRoots`)
++              ? { runtimeWorkspaceRoots: plan.workspaceRoots } : {}),
++            developerInstructions: instructions,
++            dynamicTools: globalThis.__codexThreadTools.getDynamicTools(nativeTools),
++          });
++          return { threadId: response.thread.id };
++        },
++        bindThread: async (plan, threadId) => {
++          if (plan.worktreeGitRoot) await fetch.getWorktreeService(plan.hostId).setOwnerThread({
++            worktree: plan.worktreeGitRoot, conversationId: threadId,
++          });
++          if (plan.projectId) await fetch.threadProjectAssignments.setAssignment({ threadId,
++            assignment: { projectKind: plan.projectKind, projectId: plan.projectId,
++              ...(plan.projectKind === `remote` ? { hostId: plan.hostId } : {}) } });
++          else if (plan.projectlessOutputDirectory) await fetch.recordProjectlessThread({
++            threadId, outputDirectory: plan.projectlessOutputDirectory, workspaceRoot: plan.projectlessWorkspaceRoot,
++          });
++          if (plan.title) await connection(plan.hostId).updateThreadTitle(threadId, plan.title, null);
++        },
++        setGoal: async (plan, threadId) => {
++          const host = await readyThread(plan.hostId, threadId);
++          await host.sendAppServerRequest(`thread/goal/set`, { threadId,
++            objective: plan.nativeParams.goal.objective, status: `active` });
++        },
++        reconcileGoal: async (plan, threadId) => {
++          const response = await connection(plan.hostId).sendAppServerRequest(`thread/goal/get`, { threadId });
++          return response.goal?.objective === plan.nativeParams.goal.objective;
++        },
++        injectItems: async (plan, threadId) => {
++          const host = await readyThread(plan.hostId, threadId);
++          await host.sendAppServerRequest(`thread/inject_items`, { threadId, items: plan.nativeParams.responseItems });
++        },
++        startTurn: async (plan, threadId) => {
++          const host = await readyThread(plan.hostId, threadId);
++          const response = await host.startTurn({ ...plan.turnParams, threadId, cwd: plan.cwd });
++          return { turnId: response.turn.id };
++        },
++        notify: async (source, summary) => {
++          const host = await readyThread(source.hostId, source.threadId);
++          const response = await host.startTurn({
++            threadId: source.threadId, input: [], turnTrigger: `app_tool_create_thread`,
++            toolOutput: { name: `create_thread`, namespace: `codex_app`, output: JSON.stringify(summary) },
++          });
++          return { turnId: response.turn.id };
++        },
++        reconcileNotification: async (source, summary) => {
++          let cursor = null;
++          do {
++            const page = await connection(source.hostId).listThreadTurns(source.threadId, { cursor, limit: 100, itemsView: `full` });
++            for (const turn of page.data) for (const item of turn.items ?? []) {
++              if (item.type !== `functionCallOutput` || item.name !== `create_thread` || item.namespace !== `codex_app`) continue;
++              let output;
++              try { output = typeof item.output === `string` ? JSON.parse(item.output) : item.output; }
++              catch { continue; }
++              if (output?.notificationId === summary.notificationId && output?.operationId === summary.operationId)
++                return { turnId: turn.id };
++            }
++            cursor = page.nextCursor;
++          } while (cursor != null);
++          return null;
++        },
++        reconcileTurn: async (plan, threadId) => {
++          let cursor = null;
++          do {
++            const page = await connection(plan.hostId).listThreadTurns(threadId, { cursor, limit: 100, itemsView: `full` });
++            const found = page.data.find((turn) => turn.items?.some((item) =>
++              item.type === `userMessage` && (plan.origin === `user`
++                ? JSON.stringify(item.content) === JSON.stringify(plan.turnParams.input)
++                : item.content?.some((part) => part.type === `text` && part.text === plan.turnParams.input[0].text))));
++            if (found) return { turnId: found.id };
++            cursor = page.nextCursor;
++          } while (cursor != null);
++          return null;
++        },
++      });
++      void globalThis.__codexThreadCreations.recover().catch((error) => {
++        console.error(`[codex-web] Task creation recovery failed`, error);
++      });
++    }
+     let { downloadStore: M } = this.messageHandler.getBrowserHostManager();
+     (M.setChangeListener(() => {
+       this.broadcastDownloadsState();

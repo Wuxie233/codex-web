@@ -1,0 +1,372 @@
+{
+  "name": "automation_update",
+  "description": "Create, update, view, or delete recurring automations in the Codex app. The automation prompt is user-visible and is replayed by the scheduler. Write clear, cohesive, human-readable prose. Use this when the user asks for a scheduled task, automation, recurring run, repeated task, reminder, follow-up, monitor, or asks you to watch something, keep an eye on it, check back later, wake up later, notify them, or keep working later. Heartbeat automations are proactive follow-ups attached to the current local thread and are the default for recurring requests. Use a heartbeat unless the user explicitly asks for a new task per run or standalone project work. Cron automations run as standalone local jobs against one project; use list_projects to find its project id. Never write raw automation directives by hand, show raw RRULE strings to the user, or create a workaround cron automation for a thread heartbeat unless the user explicitly asks for that. For requests about existing automations, inspect $CODEX_HOME/automations/*/automation.toml to find matching automation ids by name or prompt. Prefer updating an existing automation over creating a duplicate. For updates, preserve existing fields unless the user asks to change them, and call automation_update with the resolved id and full updated fields. Treat requests such as 'don't notify me' or 'mute this automation' as notificationPolicy=failed_runs_only, and set notificationPolicy=null when the user asks to unmute. Keep notification preferences out of the automation prompt.",
+  "inputSchema": {
+    "anyOf": [
+      {
+        "type": "object",
+        "properties": {
+          "mode": {
+            "const": "view"
+          },
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Existing automation id."
+          }
+        },
+        "required": [
+          "mode",
+          "id"
+        ],
+        "additionalProperties": false
+      },
+      {
+        "type": "object",
+        "properties": {
+          "mode": {
+            "const": "delete"
+          },
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Existing automation id."
+          }
+        },
+        "required": [
+          "mode",
+          "id"
+        ],
+        "additionalProperties": false
+      },
+      {
+        "type": "object",
+        "properties": {
+          "mode": {
+            "enum": [
+              "create",
+              "suggested_create"
+            ]
+          },
+          "kind": {
+            "const": "cron"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Short human-readable automation name."
+          },
+          "prompt": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Self-sufficient user-visible task prompt. Keep scheduling and notification preferences in their dedicated fields."
+          },
+          "rrule": {
+            "type": "string",
+            "minLength": 1,
+            "description": "RRULE schedule. Preserve for unrelated updates. Encode local wall-clock times directly without UTC conversion or DTSTART for immediate creation. Cron supports hourly/weekly schedules; heartbeat also supports minute intervals and daily schedules."
+          },
+          "status": {
+            "enum": [
+              "ACTIVE",
+              "PAUSED"
+            ]
+          },
+          "notificationPolicy": {
+            "enum": [
+              "failed_runs_only",
+              null
+            ],
+            "description": "Omit to preserve; failed_runs_only mutes completed-run notices; null unmutes."
+          },
+          "projectId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "minLength": 1,
+            "description": "Project id from list_projects; null for Threads."
+          },
+          "model": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Model to use."
+          },
+          "reasoningEffort": {
+            "enum": [
+              "none",
+              "minimal",
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max",
+              "ultra"
+            ]
+          },
+          "executionEnvironment": {
+            "enum": [
+              "local"
+            ]
+          },
+          "destination": {
+            "enum": [
+              "local"
+            ]
+          }
+        },
+        "required": [
+          "mode",
+          "kind",
+          "name",
+          "prompt",
+          "rrule",
+          "status",
+          "projectId",
+          "model",
+          "reasoningEffort",
+          "executionEnvironment"
+        ],
+        "additionalProperties": false
+      },
+      {
+        "type": "object",
+        "properties": {
+          "mode": {
+            "enum": [
+              "create",
+              "suggested_create"
+            ]
+          },
+          "kind": {
+            "const": "heartbeat"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Short human-readable automation name."
+          },
+          "prompt": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Self-sufficient user-visible task prompt. Keep scheduling and notification preferences in their dedicated fields."
+          },
+          "rrule": {
+            "type": "string",
+            "minLength": 1,
+            "description": "RRULE schedule. Preserve for unrelated updates. Encode local wall-clock times directly without UTC conversion or DTSTART for immediate creation. Cron supports hourly/weekly schedules; heartbeat also supports minute intervals and daily schedules."
+          },
+          "status": {
+            "enum": [
+              "ACTIVE",
+              "PAUSED"
+            ]
+          },
+          "notificationPolicy": {
+            "enum": [
+              "failed_runs_only",
+              null
+            ],
+            "description": "Omit to preserve; failed_runs_only mutes completed-run notices; null unmutes."
+          },
+          "destination": {
+            "enum": [
+              "local",
+              "thread"
+            ],
+            "description": "Use thread to target the current local thread."
+          },
+          "targetThreadId": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Required unless destination=thread."
+          }
+        },
+        "required": [
+          "mode",
+          "kind",
+          "name",
+          "prompt",
+          "rrule",
+          "status"
+        ],
+        "additionalProperties": false
+      },
+      {
+        "type": "object",
+        "properties": {
+          "mode": {
+            "enum": [
+              "update",
+              "suggested_update"
+            ]
+          },
+          "kind": {
+            "const": "cron"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Short human-readable automation name."
+          },
+          "prompt": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Self-sufficient user-visible task prompt. Keep scheduling and notification preferences in their dedicated fields."
+          },
+          "rrule": {
+            "type": "string",
+            "minLength": 1,
+            "description": "RRULE schedule. Preserve for unrelated updates. Encode local wall-clock times directly without UTC conversion or DTSTART for immediate creation. Cron supports hourly/weekly schedules; heartbeat also supports minute intervals and daily schedules."
+          },
+          "status": {
+            "enum": [
+              "ACTIVE",
+              "PAUSED"
+            ]
+          },
+          "notificationPolicy": {
+            "enum": [
+              "failed_runs_only",
+              null
+            ],
+            "description": "Omit to preserve; failed_runs_only mutes completed-run notices; null unmutes."
+          },
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Existing automation id."
+          },
+          "projectId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "minLength": 1,
+            "description": "Project id from list_projects; null for Threads."
+          },
+          "model": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Model to use."
+          },
+          "reasoningEffort": {
+            "enum": [
+              "none",
+              "minimal",
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max",
+              "ultra"
+            ]
+          },
+          "executionEnvironment": {
+            "enum": [
+              "local",
+              "worktree"
+            ]
+          },
+          "destination": {
+            "enum": [
+              "local",
+              "worktree"
+            ]
+          },
+          "localEnvironmentConfigPath": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "minLength": 1,
+            "description": "Set null to disable setup scripts; required null for immediate worktree updates."
+          }
+        },
+        "required": [
+          "mode",
+          "kind",
+          "name",
+          "prompt",
+          "rrule",
+          "status",
+          "id",
+          "projectId",
+          "model",
+          "reasoningEffort",
+          "executionEnvironment"
+        ],
+        "additionalProperties": false
+      },
+      {
+        "type": "object",
+        "properties": {
+          "mode": {
+            "enum": [
+              "update",
+              "suggested_update"
+            ]
+          },
+          "kind": {
+            "const": "heartbeat"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Short human-readable automation name."
+          },
+          "prompt": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Self-sufficient user-visible task prompt. Keep scheduling and notification preferences in their dedicated fields."
+          },
+          "rrule": {
+            "type": "string",
+            "minLength": 1,
+            "description": "RRULE schedule. Preserve for unrelated updates. Encode local wall-clock times directly without UTC conversion or DTSTART for immediate creation. Cron supports hourly/weekly schedules; heartbeat also supports minute intervals and daily schedules."
+          },
+          "status": {
+            "enum": [
+              "ACTIVE",
+              "PAUSED"
+            ]
+          },
+          "notificationPolicy": {
+            "enum": [
+              "failed_runs_only",
+              null
+            ],
+            "description": "Omit to preserve; failed_runs_only mutes completed-run notices; null unmutes."
+          },
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Existing automation id."
+          },
+          "destination": {
+            "enum": [
+              "local",
+              "thread"
+            ],
+            "description": "Use thread to target the current local thread."
+          },
+          "targetThreadId": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Required unless destination=thread."
+          }
+        },
+        "required": [
+          "mode",
+          "kind",
+          "name",
+          "prompt",
+          "rrule",
+          "status",
+          "id"
+        ],
+        "additionalProperties": false
+      }
+    ]
+  }
+}

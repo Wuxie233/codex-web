@@ -1,0 +1,347 @@
+--- a/webview/assets/app-primary-6b28e06666ff.js
++++ b/webview/assets/app-primary-6b28e06666ff.js
+@@ -399115,7 +399115,7 @@
+       (ye(), gXr(R, he, e), i());
+     } catch (t) {
+       (Te != null && H_.fail(Te, `submit_failed`),
+-        KPr(
++        !t.codexWebCreationPending && KPr(
+           e,
+           K.executionOptions.hostId,
+           Ee.fileAttachments,
+@@ -405707,6 +405707,94 @@
+ }) {
+   return { collaborationMode: n.collaborationMode ?? t, serviceTier: i };
+ }
++async function codexWebCreationCapability(hostId) {
++  const request = window.electronBridge?.serverCoordinatorRequest;
++  if (request == null) return false;
++  const capabilities = await request({ method: `codexWeb/capabilities`, params: { hostId } });
++  if (capabilities?.threadCreation === false) return false;
++  if (capabilities?.threadCreation !== true)
++    throw Error(`The server did not confirm durable task creation support. Your draft has been kept.`);
++  return true;
++}
++function codexWebCreationTarget(context, hostId, cwd, workspaceRoots, environment = { type: `local` }) {
++  const projectId = hostId === `local` ? context.localProjectId : context.remoteProjectId;
++  if (projectId != null) return { type: `project`, projectId, environment };
++  if (environment.type === `worktree` || !Wbe(workspaceRoots))
++    return { type: `cwd`, hostId, cwd, workspaceRoots, environment };
++  return { type: `projectless` };
++}
++async function codexWebCreateTask({ hostId, target, nativeParams, clientThreadId, onAccepted, onSettled }) {
++  const request = window.electronBridge.serverCoordinatorRequest;
++  const key = clientThreadId == null ? null : `codex-web-creation:${hostId}:${clientThreadId}`;
++  let requestId = key == null ? null : localStorage.getItem(key);
++  const existing = requestId != null;
++  requestId ??= crypto.randomUUID();
++  if (key != null) localStorage.setItem(key, requestId);
++  const read = (includeMetadata = false) => request({ method: `codexWeb/thread/creation/read`, params: { hostId, requestId, ...(includeMetadata ? { includeMetadata: true } : {}) } });
++  const unknown = () => ({ status: `outcome-unknown`, requestId });
++  const result = (receipt) => {
++    if (receipt.status === `created`)
++      return { status: `created`, conversationId: receipt.threadId,
++        firstTurn: receipt.turnId ? { status: `accepted`, turnId: receipt.turnId } : { status: `not-requested` } };
++    if (receipt.status === `failed` && receipt.threadId != null && receipt.turnId != null)
++      return { status: `created`, conversationId: receipt.threadId,
++        firstTurn: { status: `accepted`, turnId: receipt.turnId },
++        setupError: `Task ${receipt.threadId} and its first turn were started, but setup failed: ${receipt.error ?? receipt.phase}` };
++    if (receipt.status === `failed` && receipt.threadId == null && key != null) localStorage.removeItem(key);
++    if (receipt.status === `failed`)
++      return receipt.threadId
++        ? { status: `created`, conversationId: receipt.threadId,
++          firstTurn: { status: `not-started`, message: receipt.error ?? `The first message was not started.` } }
++        : { status: `failed`, message: receipt.error ?? `Task creation failed.` };
++    return unknown();
++  };
++  let receipt;
++  try {
++    receipt = existing ? await read() : null;
++    // A missing receipt after a lost acknowledgement is not permission to replay.
++    if (existing && receipt == null) return unknown();
++    if (!existing) receipt = await request({ method: `codexWeb/thread/create`, params: { hostId,
++      command: { requestId, target, input: nativeParams.input, nativeParams,
++        ...(nativeParams.initialTitle == null ? {} : { title: nativeParams.initialTitle }) } } });
++  } catch (error) {
++    try { receipt = await read(); } catch {}
++    if (receipt == null) return unknown();
++  }
++  try { await onAccepted?.(); } catch (error) { ql.warning(`Task accepted; presentation failed`, { safe: {}, sensitive: { error } }); }
++  const observedPath = window.location.pathname;
++  let detached = false;
++  const detach = () => { detached = true; };
++  window.addEventListener(`pagehide`, detach, { once: true });
++  const poll = async () => {
++    while (receipt?.status === `queued`) {
++      if (detached || window.location.pathname !== observedPath) return unknown();
++      await new Promise((resolve) => setTimeout(resolve, 1000));
++      if (detached || window.location.pathname !== observedPath) return unknown();
++      try { receipt = await read() ?? receipt; } catch { /* Only retry receipt reads. */ }
++    }
++    if (detached || window.location.pathname !== observedPath) return unknown();
++    if (receipt?.threadId != null && receipt?.turnId != null) {
++      try {
++      try { receipt = await read(true) ?? receipt; } catch { /* Presentation can use this accepted command's original UI context. */ }
++      const uiMetadata = receipt.uiMetadata ?? Object.fromEntries(
++        [`attachments`, `commentAttachments`, `localTurnMetadata`, `mcpAppModelContextAttachments`]
++          .filter((field) => nativeParams[field] != null).map((field) => [field, nativeParams[field]]));
++      const saved = { ...receipt, uiMetadata };
++      (window.__codexWebCreationMetadata ??= {})[JSON.stringify([hostId, receipt.threadId])] = saved;
++      localStorage.setItem(`codex-web-creation:${hostId}:${receipt.threadId}`, requestId);
++      await window.codexWebApplyCreationMetadata?.(hostId, receipt.threadId);
++      } catch (error) { ql.warning(`Task created; metadata presentation failed`, { safe: {}, sensitive: { error } }); }
++    }
++    if (detached || window.location.pathname !== observedPath) return unknown();
++    const settled = result(receipt);
++    try { await onSettled?.(settled); } catch (error) { ql.warning(`Task settled; presentation failed`, { safe: {}, sensitive: { error } }); }
++    return settled;
++  };
++  let timer;
++  return Promise.race([poll().finally(() => window.removeEventListener(`pagehide`, detach)), new Promise((resolve) => {
++    timer = setTimeout(() => resolve({ ...unknown(), accepted: true }), 30000);
++  })]).finally(() => clearTimeout(timer));
++}
+ function a$r({
+   scope: e,
+   activeCollaborationMode: t,
+@@ -405737,6 +405825,17 @@
+   startConversationWithPrimaryRuntimeForFirstTurn: E,
+   syncChatGptProjectForLocalTask: D,
+ }) {
++  window.codexWebApplyCreationMetadata = async (hostId, threadId) => {
++    const manager = DC(e, hostId), conversation = manager.getConversation(threadId);
++    if (conversation != null) {
++      for (const receipt of window.__codexWebFollowUpMetadata?.[JSON.stringify([hostId, threadId])] ?? []) {
++        if (receipt.pendingWorkspace && receipt.workspaceCommit?.revision != null)
++          await manager.commitThreadWorkspaceTransition(threadId, receipt.workspaceCommit.revision, receipt.pendingWorkspace);
++      }
++      manager.setConversation(manager.getConversation(threadId));
++      manager.notifyConversationUpdated(threadId);
++    }
++  };
+   let O =
+       e.value.kind === `new` &&
+       (e.value.entrypoint === `home` || e.value.entrypoint === `panel`) &&
+@@ -405786,6 +405885,7 @@
+       };
+     },
+     N = async (n, r, i, a, s, c) => {
++      const serverCreation = await codexWebCreationCapability(a?.hostId ?? C);
+       let { context: l, memoryPreferences: u } = await M(n),
+         f = o$r(l, a),
+         g = l.localProjectId == null && Wbe(f),
+@@ -405822,8 +405922,13 @@
+         });
+       try {
+         let n;
+-        n =
+-          P.existingWorkspaceRoot != null && v === `local`
++        n = serverCreation
++          ? Promise.resolve({ cwd: P.existingWorkspaceRoot ?? r, workspaceRoots: f,
++              projectlessOutputDirectory: null,
++              projectAssignment: (v === `local` ? P.localProjectId : P.remoteProjectId) == null ? null : {
++                projectKind: v === `local` ? `local` : `remote`,
++                projectId: v === `local` ? P.localProjectId : P.remoteProjectId } })
++          : P.existingWorkspaceRoot != null && v === `local`
+             ? Promise.resolve({
+                 cwd: P.existingWorkspaceRoot,
+                 projectlessOutputDirectory: null,
+@@ -405874,7 +405979,7 @@
+           }),
+           D = uVe(
+             { ...C, mode: x.mode },
+-            { allowProjectlessWithoutOutputDirectory: !1 },
++            { allowProjectlessWithoutOutputDirectory: serverCreation },
+           );
+         ((D.clientUserMessageId = s),
+           x.threadStartKind != null && (D.threadStartKind = x.threadStartKind),
+@@ -405961,7 +406066,7 @@
+             }
+           }),
+           q = (0, F9.default)(async (t) => {
+-            (await A(t, x.threadCreationHostId, N?.materialized.objective),
++            (serverCreation || await A(t, x.threadCreationHostId, N?.materialized.objective),
+               N != null &&
+                 (await cue({ scope: e, draft: N.draft, fallbackHostId: v })));
+           }),
+@@ -405989,7 +406094,15 @@
+             }
+             return t;
+           },
+-          ee = await E({
++          ee = await (serverCreation ? ((options) => codexWebCreateTask({
++            hostId: v,
++            target: codexWebCreationTarget(P, v, u, f),
++            nativeParams: { ...D, attachments: k,
++              ...(N == null ? {} : { goal: { objective: N.materialized.objective, status: `active` } }) },
++            clientThreadId: o ?? s,
++            onAccepted: c,
++            onSettled: options.onSettled,
++          })) : E)({
+             onMessageAdded: c,
+             afterConversationCreated: void 0,
+             attachments: k,
+@@ -406031,7 +406144,7 @@
+                 requestId: te.requestId,
+               }),
+             { threadId: null, turnId: null, creation: te })
+-          : await J(te);
++          : await (async () => { const created = await J(te); if (te.setupError) throw Error(te.setupError); return created; })();
+       } catch (t) {
+         if ((I || (await H()), o != null && !I)) {
+           let t = e.get(xO, o);
+@@ -406054,6 +406167,13 @@
+       }
+     },
+     P = async (n, r, i, c, l, u) => {
++      const serverCreation = await codexWebCreationCapability(l?.hostId ?? C);
++      let serverGoal;
++      if (serverCreation && n.threadGoalDraft != null) {
++        const prepared = await j(n, l?.hostId ?? C);
++        n = prepared.context;
++        serverGoal = prepared.goal;
++      }
+       let d = l?.workspaceRoots ?? n.workspaceRoots ?? [r],
+         f = l?.hostId ?? C,
+         m = k(l),
+@@ -406087,6 +406207,46 @@
+         });
+       (h.threadStartKind != null && (b.threadStartKind = h.threadStartKind),
+         h.mode != null && (b.mode = h.mode));
++      if (serverCreation) {
++        const clientId = o ?? ade();
++        const pending = { hostId: f, prompt: v, status: `creating`, title: Wv(b.input) };
++        e.set(xO, clientId, pending);
++        _?.(clientId, `thread`);
++        const nativeParams = uVe(b, { allowProjectlessWithoutOutputDirectory: true });
++        if (serverGoal != null) nativeParams.goal = { objective: serverGoal.materialized.objective, status: `active` };
++        nativeParams.attachments = _x([...(nativeParams.attachments ?? []), ...lme(n.imageAttachments)]);
++        const target = codexWebCreationTarget(n, f, r, d, {
++          type: `worktree`, startingState: i, localEnvironmentConfigPath: c,
++        });
++        const settle = async (created) => {
++          if (created.status !== `created`) return;
++          _h(e, { clientThreadId: clientId, conversationId: created.conversationId });
++          e.set(xO, clientId, null);
++          if (n.navigation !== `background`) p(Ms(created.conversationId), { replace: true });
++        };
++        const created = await codexWebCreateTask({ hostId: f, target, nativeParams,
++          clientThreadId: clientId,
++          onAccepted: () => { if (n.navigation !== `background`) p(Ms(clientId)); },
++          onSettled: settle,
++        });
++        if (created.status === `failed`) {
++          e.set(xO, clientId, { ...pending, status: `failed` });
++          throw Error(created.message);
++        }
++        if (created.status === `outcome-unknown`) {
++          e.set(xO, clientId, { ...pending, status: `outcome-unknown`, requestId: created.requestId });
++          if (created.accepted) return;
++          const error = Error(`Task submission is not yet confirmed. Request ${created.requestId}. Do not send it again.`);
++          error.codexWebCreationPending = true;
++          throw error;
++        }
++        if (created.setupError) throw Error(created.setupError);
++        const error = kv(e, created);
++        if (error != null) throw error;
++        T(null);
++        e.set(Ow, null);
++        return;
++      }
+       let x = [],
+         S = null;
+       if (
+@@ -406235,6 +406395,7 @@
+           });
+     },
+     L = async (n, r, i, a, s) => {
++      const serverCreation = await codexWebCreationCapability(i?.hostId ?? C);
+       let { context: c, memoryPreferences: l } = await M(n),
+         u = o$r(c, i),
+         d = c.localProjectId == null && Wbe(u),
+@@ -406263,7 +406424,11 @@
+           i = lme(g.imageAttachments),
+           c = l ?? e.get(Ow),
+           C = Kl({ ...g, priorConversation: n }),
+-          D = await u$r({
++          D = serverCreation ? { cwd: g.existingWorkspaceRoot ?? u[0], workspaceRoots: u,
++            projectlessOutputDirectory: null,
++            projectAssignment: (f === `local` ? g.localProjectId : g.remoteProjectId) == null ? null : {
++              projectKind: f === `local` ? `local` : `remote`,
++              projectId: f === `local` ? g.localProjectId : g.remoteProjectId } } : await u$r({
+             hostId: f,
+             projectId: f === `local` ? g.localProjectId : g.remoteProjectId,
+             prompt: C,
+@@ -406298,7 +406463,7 @@
+             projectlessOutputDirectory: D.projectlessOutputDirectory,
+             projectAssignment: D.projectAssignment,
+           }),
+-          M = uVe({ ...j, mode: v.mode });
++          M = uVe({ ...j, mode: v.mode }, { allowProjectlessWithoutOutputDirectory: serverCreation });
+         (v.threadStartKind != null && (M.threadStartKind = v.threadStartKind),
+           (M.clientUserMessageId = a));
+         let N = {
+@@ -406330,7 +406495,7 @@
+               h ? await h(t) : p(`/local/${t}`));
+           }),
+           z = (0, F9.default)(async (t) => {
+-            (await A(t, v.threadCreationHostId, _?.materialized.objective),
++            (serverCreation || await A(t, v.threadCreationHostId, _?.materialized.objective),
+               _ != null &&
+                 (await cue({ scope: e, draft: _.draft, fallbackHostId: f })));
+           }),
+@@ -406357,7 +406522,12 @@
+             }
+             return t;
+           },
+-          V = await Kc(
++          V = await (serverCreation ? ((scope, hostId, params, options) => codexWebCreateTask({
++            hostId, target: codexWebCreationTarget(g, f, O, u),
++            nativeParams: { ...params,
++              ...(_ == null ? {} : { goal: { objective: _.materialized.objective, status: `active` } }) },
++            clientThreadId: o ?? a, onAccepted: options.onMessageAdded, onSettled: options.onSettled,
++          })) : Kc)(
+             e,
+             v.threadCreationHostId,
+             { ...M, attachments: _x([...(M.attachments ?? []), ...i]) },
+@@ -406397,7 +406567,7 @@
+               }),
+             (y = !0),
+             { threadId: null, turnId: null, creation: H })
+-          : await B(H);
++          : await (async () => { const created = await B(H); if (H.setupError) throw Error(H.setupError); return created; })();
+       } catch (t) {
+         throw (
+           y ||
+--- a/webview/assets/app-initial-236e1501144c.js
++++ b/webview/assets/app-initial-236e1501144c.js
+@@ -143619,6 +143619,28 @@
++function codexWebOverlayCreationMetadata(conversation, hostId) {
++  const identity = JSON.stringify([hostId, conversation.id]);
++  const receipts = [...(window.__codexWebFollowUpMetadata?.[identity] ?? []), window.__codexWebCreationMetadata?.[identity]].filter(Boolean);
++  if (!receipts.length) return conversation;
++  const overlay = (turn) => {
++    const metadata = receipts.find((receipt) => receipt.turnId === turn.turnId)?.uiMetadata;
++    if (metadata == null) return turn;
++    return { ...turn,
++      params: { ...turn.params,
++        ...(metadata.attachments == null ? {} : { attachments: metadata.attachments }),
++        ...(metadata.commentAttachments == null ? {} : { commentAttachments: metadata.commentAttachments }) },
++      ...(metadata.localTurnMetadata == null ? {} : { localMetadata: metadata.localTurnMetadata }),
++      ...(metadata.mcpAppModelContextAttachments == null ? {} : { mcpAppModelContextAttachments: metadata.mcpAppModelContextAttachments }) };
++  };
++  return { ...conversation,
++    turns: conversation.turns.map(overlay),
++    ...(conversation.turnHistory?.kind !== `canonical` ? {} : { turnHistory: {
++      ...conversation.turnHistory,
++      history: { ...conversation.turnHistory.history,
++        entitiesByKey: Object.fromEntries(Object.entries(conversation.turnHistory.history.entitiesByKey)
++          .map(([key, turn]) => [key, overlay(turn)])) } } }) };
++}
+ function f3t(e, t) {
+   return {
+-    ...e,
++    ...codexWebOverlayCreationMetadata(e, e.hostId ?? t),
+     hostId: e.hostId ?? t,
+     turnsPagination: e.turnsPagination ?? a3t(),
+     workspaceKind: e.workspaceKind ?? `project`,

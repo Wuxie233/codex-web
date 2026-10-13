@@ -1,0 +1,140 @@
+--- a/.vite/build/main-C5K7o1Hr.js
++++ b/.vite/build/main-C5K7o1Hr.js
+@@ -136426,4 +136426,137 @@
++    // A daemon client must subscribe again after reconnect; thread/read does not.
++    // Resume also delivers pending server requests without starting another turn.
++    let subscriptionGeneration = 0;
++    let subscriptionDisposed = false;
++    const subscribedThreads = new Set();
++    const subscribingThreads = new Map();
++    const subscriptionSignals = new Set();
++    const subscriptionVersions = new Map();
++    const excludedSubscriptionThreads = new Set();
++    const pendingUnsubscriptions = new Map();
++    const invalidateSubscription = (threadId) => {
++      subscribedThreads.delete(threadId);
++      subscriptionVersions.set(threadId, (subscriptionVersions.get(threadId) ?? 0) + 1);
++    };
++    const subscriptionLog = (error) => console.warn(`[codex-web] Thread subscription recovery failed`, String(error?.message ?? error));
++    const listArchivedThreadIds = async () => {
++      const ids = new Set();
++      let cursor = null;
++      do {
++        const page = await m.sendAppServerRequest(`thread/list`, { archived: true, limit: 100, cursor });
++        for (const thread of page.data) ids.add(thread.id);
++        cursor = page.nextCursor;
++      } while (cursor != null);
++      return ids;
++    };
++    const subscribeThread = (threadId, archivedIds, fromStatus = false) => {
++      if (subscriptionDisposed || m.connectionState !== `connected` || subscribedThreads.has(threadId) || excludedSubscriptionThreads.has(threadId)) return Promise.resolve();
++      const existing = subscribingThreads.get(threadId);
++      if (existing) {
++        if (fromStatus) subscriptionSignals.add(threadId);
++        return existing;
++      }
++      const generation = subscriptionGeneration;
++      const version = subscriptionVersions.get(threadId) ?? 0;
++      const operation = (async () => {
++        const archived = archivedIds ?? await listArchivedThreadIds();
++        if (archived.has(threadId) || generation !== subscriptionGeneration || subscriptionDisposed) return;
++        const thread = await m.readThread(threadId, { includeTurns: false });
++        if (generation !== subscriptionGeneration || subscriptionDisposed || excludedSubscriptionThreads.has(threadId) || thread.status?.type === `notLoaded`) return;
++        if (thread.parentThreadId || thread.source?.subAgent || thread.canAcceptDirectInput === false || thread.ephemeral === true) {
++          excludedSubscriptionThreads.add(threadId);
++          return;
++        }
++        await m.resumeThread(threadId, { cwd: thread.cwd, path: thread.path });
++        if (generation === subscriptionGeneration && version === (subscriptionVersions.get(threadId) ?? 0) && !subscriptionDisposed && !excludedSubscriptionThreads.has(threadId)) subscribedThreads.add(threadId);
++      })().catch(subscriptionLog).finally(() => {
++        if (subscribingThreads.get(threadId) === operation) {
++          subscribingThreads.delete(threadId);
++          if (subscriptionSignals.delete(threadId)) void subscribeThread(threadId);
++        }
++      });
++      subscribingThreads.set(threadId, operation);
++      return operation;
++    };
++    const restoreThreadSubscriptions = async () => {
++      const generation = subscriptionGeneration;
++      const archived = await listArchivedThreadIds();
++      let cursor = null;
++      do {
++        if (generation !== subscriptionGeneration || subscriptionDisposed) return;
++        const page = await m.sendAppServerRequest(`thread/loaded/list`, { limit: 100, cursor });
++        await Promise.all(page.data.map((threadId) => subscribeThread(threadId, archived)));
++        cursor = page.nextCursor;
++      } while (cursor != null);
++    };
++    const stopSubscriptionNotifications = m.registerInternalNotificationHandler((notification) => {
++      const params = notification.params;
++      if (notification.method === `thread/started`) {
++        void subscribeThread(params.thread.id, undefined, true);
++      } else if (notification.method === `thread/archived` || notification.method === `thread/deleted` || notification.method === `thread/closed`) {
++        invalidateSubscription(params.threadId);
++        if (notification.method !== `thread/closed`) excludedSubscriptionThreads.add(params.threadId);
++      } else if (notification.method === `thread/unarchived`) {
++        excludedSubscriptionThreads.delete(params.threadId);
++      } else if (notification.method === `thread/status/changed`) {
++        if (params.status?.type === `notLoaded`) invalidateSubscription(params.threadId);
++        else void subscribeThread(params.threadId, undefined, true);
++      }
++    });
++    // Browser and internal requests share this transport. Unsubscribe has no
++    // thread/closed event, so restore only after its actual successful response.
++    const sendSubscriptionMessage = m.messageDelivery.sendMessage.bind(m.messageDelivery);
++    m.messageDelivery.sendMessage = (message, ...args) => {
++      const unsubscribe = message.method === `thread/unsubscribe`;
++      const key = String(message.id);
++      if (unsubscribe) pendingUnsubscriptions.set(key, { threadId: message.params.threadId, generation: subscriptionGeneration });
++      try { return sendSubscriptionMessage(message, ...args); }
++      catch (error) {
++        if (unsubscribe) pendingUnsubscriptions.delete(key);
++        throw error;
++      }
++    };
++    const routeSubscriptionResponse = m.routeResponse.bind(m);
++    m.routeResponse = (response, ...args) => {
++      const key = String(response.id);
++      const pending = pendingUnsubscriptions.get(key);
++      pendingUnsubscriptions.delete(key);
++      const result = routeSubscriptionResponse(response, ...args);
++      if (pending && !response.error && pending.generation === subscriptionGeneration && !subscriptionDisposed) {
++        invalidateSubscription(pending.threadId);
++        void subscribeThread(pending.threadId, undefined, true);
++      }
++      return result;
++    };
++    const stopSubscriptionConnection = m.registerInternalConnectionStateHandler((state) => {
++      ++subscriptionGeneration;
++      subscribedThreads.clear();
++      subscribingThreads.clear();
++      subscriptionSignals.clear();
++      subscriptionVersions.clear();
++      excludedSubscriptionThreads.clear();
++      pendingUnsubscriptions.clear();
++      if (state === `connected`) void restoreThreadSubscriptions().catch(subscriptionLog);
++    });
++    const disposeSubscriptionConnection = m.dispose.bind(m);
++    m.dispose = (...args) => {
++      subscriptionDisposed = true;
++      ++subscriptionGeneration;
++      stopSubscriptionNotifications();
++      stopSubscriptionConnection();
++      subscribedThreads.clear();
++      subscribingThreads.clear();
++      subscriptionSignals.clear();
++      subscriptionVersions.clear();
++      excludedSubscriptionThreads.clear();
++      pendingUnsubscriptions.clear();
++      m.messageDelivery.sendMessage = sendSubscriptionMessage;
++      m.routeResponse = routeSubscriptionResponse;
++      return disposeSubscriptionConnection(...args);
++    };
++    if (m.connectionState === `connected`) queueMicrotask(() => {
++      if (!subscriptionDisposed) void restoreThreadSubscriptions().catch(subscriptionLog);
++    });
+     return (
+       m.registerInternalServerRequestHandler({
+         methods: [
+           `item/commandExecution/requestApproval`,

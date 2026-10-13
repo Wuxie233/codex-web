@@ -1,0 +1,72 @@
+--- a/.vite/build/main-C5K7o1Hr.js
++++ b/.vite/build/main-C5K7o1Hr.js
+@@ -135148,3 +135148,69 @@
++    // Management commands use the same durable native services as the desktop UI.
++    if (globalThis.__codexThreadManagement) {
++      const fetch = this.fetchHandler;
++      const connection = (hostId) => this.appServerConnectionRegistry.getConnection(hostId);
++      const archiveService = new XNe(this.executionHostRegistry,
++        this.appServerConnectionRegistry, this.localThreadCatalogSyncCoordinator);
++      globalThis.__codexThreadManagement.registerAdapter({
++        threadProjectId: (threadId) =>
++          n.Ai(fetch.globalState.get(n.Sc.THREAD_PROJECT_ASSIGNMENTS))[threadId]?.projectId ?? null,
++        setTitle: (hostId, threadId, title) => connection(hostId).updateThreadTitle(threadId, title, null),
++        setPinned: async (hostId, threadId, pinned) => {
++          await fetch.pinnedThreadsService.set({ hostId, threadId, pinned, useAppServerPins: true });
++        },
++        setArchived: async (hostId, thread, archived, options) => {
++          const conn = connection(hostId);
++          const method = archived ? `thread/archive` : `thread/unarchive`;
++          const undoKey = `codex-web-archive-pin-undo`;
++          const placementKey = JSON.stringify([hostId, thread.id]);
++          if (archived) {
++            const { threadIds } = await fetch.pinnedThreadsService.list({ hostId, useAppServerPins: true });
++            const index = threadIds.indexOf(thread.id);
++            const placements = { ...(fetch.globalState.get(undoKey) ?? {}) };
++            delete placements[placementKey];
++            if (index >= 0) placements[placementKey] = {
++              beforeThreadId: threadIds[index + 1] ?? null, expiresAt: Date.now() + 60000,
++            };
++            fetch.globalState.set(undoKey, placements);
++            await fetch.globalState.flushOrThrow();
++          }
++          if (archived) conn.registerArchiveThread(thread.id, {
++            cwd: thread.cwd,
++            cleanupWorktree: options?.cleanupWorktree ?? (!!thread.cwd && thread.cwd !== `/` && !thread.source?.subAgent),
++          });
++          else conn.registerUnarchiveThread(thread.id);
++          try {
++            await conn.sendAppServerRequest(method, { threadId: thread.id });
++          } catch (error) {
++            try {
++              if (!archived || hostId !== `local` || !String(error).includes(`no rollout found for thread id ${thread.id}`)) throw error;
++              const persisted = await archiveService.archiveInactiveThread({ hostId, threadId: thread.id,
++                removeCatalogEntryIfMissing: false });
++              if (!persisted.success) throw error;
++            } catch (failure) {
++              conn.archive.handleResponse(method, thread.id, false);
++              throw failure;
++            }
++          }
++          // Internal RPCs do not enter clientRequestQueue, so apply native response effects here.
++          conn.archive.handleResponse(method, thread.id, true);
++          if (archived) await fetch.pinnedThreadsService.set({ hostId, threadId: thread.id, pinned: false, useAppServerPins: false });
++          if (!archived) {
++            const placements = { ...(fetch.globalState.get(undoKey) ?? {}) };
++            const placement = placements[placementKey];
++            if (options?.restorePin && placement && placement.expiresAt >= Date.now())
++              await fetch.pinnedThreadsService.set({ hostId, threadId: thread.id, pinned: true,
++                beforeThreadId: placement.beforeThreadId, useAppServerPins: true });
++            delete placements[placementKey];
++            fetch.globalState.set(undoKey, placements);
++            await fetch.globalState.flushOrThrow();
++          }
++          conn.messageDelivery.broadcastToWindows({
++            type: `tasks-reload-requested`,
++          });
++        },
++      });
++    }
+     let { downloadStore: M } = this.messageHandler.getBrowserHostManager();
+     (M.setChangeListener(() => {
+       this.broadcastDownloadsState();

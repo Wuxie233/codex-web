@@ -1,0 +1,130 @@
+--- a/.vite/build/main-C5K7o1Hr.js
++++ b/.vite/build/main-C5K7o1Hr.js
+@@ -135148,3 +135148,127 @@
++    if (globalThis.__codexThreadForks) {
++      const fetch = this.fetchHandler;
++      const registry = this.appServerConnectionRegistry;
++      const connection = (hostId) => registry.getConnection(hostId);
++      const accountKey = async (hostId) => {
++        const principal = await connection(hostId).getAuthenticatedPrincipal();
++        const bytes = await globalThis.crypto.subtle.digest(`SHA-256`, new TextEncoder().encode(JSON.stringify(principal)));
++        return Array.from(new Uint8Array(bytes), (byte) => byte.toString(16).padStart(2, `0`)).join(``);
++      };
++      const bounded = (operation) => {
++        let timer;
++        return Promise.race([Promise.resolve().then(operation), new Promise((_, reject) => {
++          timer = setTimeout(() => reject(Error(`Fork source lookup timed out`)), 10000);
++        })]).finally(() => clearTimeout(timer));
++      };
++      const copyProjectless = (plan, threadId) => {
++        const keys = [n.Sc.PROJECTLESS_THREAD_IDS, n.Sc.THREAD_WORKSPACE_ROOT_HINTS,
++          n.Sc.THREAD_PROJECTLESS_OUTPUT_DIRECTORIES];
++        fetch.globalState.update(keys[0], (ids) => [...new Set([...(ids ?? []), threadId])]);
++        for (const [key, value] of [[keys[1], plan.workspaceRoot], [keys[2], plan.outputDirectory]]) {
++          fetch.globalState.update(key, (entries) => {
++            const next = { ...entries };
++            if (value == null) delete next[threadId];
++            else next[threadId] = value;
++            return next;
++          });
++        }
++        connection(plan.hostId).messageDelivery.broadcastToWindows({ type: `global-state-updated`, keys });
++      };
++      globalThis.__codexThreadForks.registerAdapter({
++        prepare: async (input) => {
++          const hosts = input.discoverHost ? registry.getAllHostIds() : [input.sourceHostId];
++          const outcomes = await Promise.all(hosts.map(async (hostId) => {
++            try { return { hostId, thread: await bounded(() => connection(hostId).readThread(input.sourceThreadId, { includeTurns: false })) }; }
++            catch (error) { if (/not found|no rollout found|does not exist/i.test(String(error))) return null; throw error; }
++          }));
++          const matches = outcomes.filter((entry) => entry?.thread?.id === input.sourceThreadId);
++          if (matches.length !== 1) throw Error(matches.length ? `Fork source is ambiguous across hosts` : `Fork source was not found`);
++          const { hostId: sourceHostId, thread } = matches[0];
++          const hostId = input.destinationHostId ?? sourceHostId;
++          const cwd = input.cwd ?? thread.cwd;
++          if (typeof cwd !== `string` || !cwd) throw Error(`Fork source has no workspace`);
++          const workspaceRoots = input.workspaceRoots ?? fetch.globalState.get(n.Sc.THREAD_WRITABLE_ROOTS)?.[thread.id] ?? [cwd];
++          const assignment = input.projectAssignment === undefined ? n.Ai(fetch.globalState.get(n.Sc.THREAD_PROJECT_ASSIGNMENTS))[thread.id] ?? null : input.projectAssignment;
++          const plan = { ...input, sourceHostId, hostId, cwd, workspaceRoots, assignment,
++            sourceSectionId: thread.section?.id ?? null,
++            sourceAccount: await bounded(() => accountKey(sourceHostId)),
++            destinationAccount: await bounded(() => accountKey(hostId)),
++            projectless: (fetch.globalState.get(n.Sc.PROJECTLESS_THREAD_IDS) ?? []).includes(thread.id),
++            outputDirectory: fetch.globalState.get(n.Sc.THREAD_PROJECTLESS_OUTPUT_DIRECTORIES)?.[thread.id] ?? null,
++            workspaceRoot: fetch.globalState.get(n.Sc.THREAD_WORKSPACE_ROOT_HINTS)?.[thread.id] ?? null };
++          if (input.environment === `worktree`) {
++            const metadata = await bounded(() => fetch.requestGitWorker({ method: `stable-metadata`, params: {
++              cwd: n.ko(cwd), hostConfig: fetch.getAppServerClientForHostIdOrThrow(hostId).hostConfig, operationSource: `fork_thread` } }));
++            if (!metadata) throw Error(`Cannot fork into a worktree outside a Git repository`);
++          }
++          return plan;
++        },
++        createWorktree: async (plan, operationId) => {
++          const worktree = await fetch.handlers[`worktree-create-managed`]({ hostId: plan.hostId, cwd: plan.cwd,
++            startingState: { type: `working-tree` }, localEnvironmentConfigPath: null, streamId: operationId });
++          return { cwd: worktree.worktreeWorkspaceRoot, workspaceRoots: [worktree.worktreeWorkspaceRoot], worktreeGitRoot: worktree.worktreeGitRoot };
++        },
++        fork: async (plan) => {
++          if (await accountKey(plan.sourceHostId) !== plan.sourceAccount || await accountKey(plan.hostId) !== plan.destinationAccount) throw Error(`Fork placement account retired`);
++          const nativeTools = plan.nativeParams?.dynamicTools ?? await this.messageHandler.requestDynamicToolsForThreadStart(null, true, `default`, plan.hostId);
++          const dynamicTools = globalThis.__codexThreadTools.getDynamicTools(nativeTools);
++          if (plan.nativeParams) {
++            const response = await connection(plan.hostId).forkThread({ ...plan.nativeParams, dynamicTools });
++            return { threadId: response.thread.id, forkResponse: response };
++          }
++          const config = await connection(plan.hostId).getUserSavedConfiguration(plan.cwd);
++          const instructions = await fetch.getProjectAwareDeveloperInstructions({ baseInstructions: config.developer_instructions,
++            cwd: plan.cwd, hostId: plan.hostId, threadToolsEnabled: true, sidebarSectionToolsEnabled: true });
++          const response = await connection(plan.hostId).forkThread({ threadId: plan.sourceThreadId,
++            path: plan.rolloutPath ?? null, cwd: plan.cwd, runtimeWorkspaceRoots: plan.workspaceRoots,
++            threadSource: plan.threadSource ?? `agent_forked_thread`, config, excludeTurns: true,
++            developerInstructions: instructions, dynamicTools });
++          return { threadId: response.thread.id };
++        },
++        injectItems: async (plan, threadId) => {
++          if (await accountKey(plan.hostId) !== plan.destinationAccount) throw Error(`Fork destination account retired`);
++          await connection(plan.hostId).sendAppServerRequest(`thread/inject_items`, { threadId, items: plan.metadata.sideConversationBoundaryItems });
++        },
++        synchronize: async (plan, threadId) => {
++          if (await accountKey(plan.sourceHostId) !== plan.sourceAccount || await accountKey(plan.hostId) !== plan.destinationAccount) throw Error(`Fork placement account retired`);
++          // Fork is durable before setup; retries only repeat idempotent metadata writes.
++          if (plan.nativeParams) {
++            const metadata = plan.metadata ?? {};
++            if (plan.nativeParams.ephemeral) return;
++            await connection(plan.hostId).resumeThread(threadId, { cwd: plan.forkResponse.cwd, runtimeWorkspaceRoots: plan.nativeParams.runtimeWorkspaceRoots?.length ? plan.nativeParams.runtimeWorkspaceRoots : [plan.forkResponse.cwd],
++              collaborationMode: metadata.collaborationMode ?? null });
++            const assignment = metadata.projectAssignment === undefined ? plan.assignment : metadata.projectAssignment;
++            if (assignment) await fetch.threadProjectAssignments.setAssignment({ threadId, assignment });
++            else if (plan.projectless) copyProjectless(plan, threadId);
++            if (metadata.placement?.prependToManualProject && assignment?.projectId) {
++              const orders = fetch.globalState.get(`sidebar-project-thread-orders`) ?? {};
++              const current = orders[assignment.projectId] ?? {};
++              fetch.globalState.set(`sidebar-project-thread-orders`, { ...orders, [assignment.projectId]: { ...current, threadIds: [threadId, ...(current.threadIds ?? []).filter((id) => id !== threadId)] } });
++            }
++            if (metadata.placement?.customSection) {
++              if (!globalThis.__codexThreadSidebar?.placeFork) throw Error(`Fork created; sidebar placement adapter is unavailable`);
++              await globalThis.__codexThreadSidebar.placeFork({ hostId: plan.hostId, threadId, sourceThreadId: plan.sourceThreadId, placement: metadata.placement, projectAssignment: assignment });
++            }
++            if (globalThis.__codexThreadInputGuard?.cloneForkState) await globalThis.__codexThreadInputGuard.cloneForkState({ sourceHostId: plan.sourceHostId, sourceThreadId: plan.sourceThreadId, destinationHostId: plan.hostId, threadId });
++            await fetch.globalState.flush();
++            connection(plan.hostId).messageDelivery.broadcastToWindows({ type: `tasks-reload-requested` });
++            return;
++          }
++          await connection(plan.hostId).resumeThread(threadId, { cwd: plan.cwd, runtimeWorkspaceRoots: plan.workspaceRoots });
++          if (plan.worktreeGitRoot) await fetch.getWorktreeService(plan.hostId).setOwnerThread({ worktree: plan.worktreeGitRoot, conversationId: threadId });
++          if (plan.assignment) await fetch.threadProjectAssignments.setAssignment({ threadId, assignment: plan.assignment });
++          else if (plan.projectless) copyProjectless(plan, threadId);
++          if (plan.hostId === plan.sourceHostId && plan.sourceSectionId && plan.sourceSectionId !== `01984de2-8f74-7c91-a3b2-5c5e937cf318`) {
++            await fetch.pinnedThreadsService.setThreadSection({ hostId: plan.hostId, threadId,
++              sectionId: plan.sourceSectionId, beforeThreadId: plan.sourceThreadId });
++          }
++          if (globalThis.__codexThreadInputGuard?.cloneForkState) await globalThis.__codexThreadInputGuard.cloneForkState({
++            sourceHostId: plan.sourceHostId, sourceThreadId: plan.sourceThreadId, destinationHostId: plan.hostId, threadId });
++          await fetch.globalState.flush();
++          connection(plan.hostId).messageDelivery.broadcastToWindows({ type: `tasks-reload-requested` });
++        },
++      });
++    }
+     let { downloadStore: M } = this.messageHandler.getBrowserHostManager();
+     (M.setChangeListener(() => {
+       this.broadcastDownloadsState();

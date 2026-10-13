@@ -1,0 +1,240 @@
+--- a/webview/assets/app-initial-236e1501144c.js
++++ b/webview/assets/app-initial-236e1501144c.js
+@@ -156405,14 +156405,15 @@
+   });
+ }
+ async function Fin(e, t, n = !1) {
+-  (await e.prepareOwnedThreadForUnarchive(t),
++  const serverOwned = await codexWebLifecycleEnabled(e.hostId, `threadArchive`);
++  (!serverOwned && await e.prepareOwnedThreadForUnarchive(t),
+     e.pendingThreadArchives.remove(t),
+     e.logger.info(`Unarchive requested`, {
+       safe: { conversationId: t },
+       sensitive: {},
+     }));
+   try {
+-    (await e.unarchiveThread(t),
++    (await (serverOwned ? codexWebLifecycleCommand(`archive`, e.hostId, null, { threadId: t, archived: false, restorePin: n }) : e.unarchiveThread(t)),
+       e.logger.info(`Unarchive succeeded`, {
+         safe: { conversationId: t },
+         sensitive: {},
+@@ -156437,7 +156438,7 @@
+           sensitive: { error: n },
+         });
+       }),
+-    !e.useAppServerPins)
++    !serverOwned && !e.useAppServerPins)
+   ) {
+     let r = `${e.hostId}:${t}`,
+       i = e.archivedPinnedThreadPlacements.get(r);
+@@ -156455,6 +156456,7 @@
+   }
+ }
+ async function Iin(e, t, n, r) {
++  const serverOwned = await codexWebLifecycleEnabled(e.hostId, `threadArchive`);
+   e.logger.info(`Archive requested`, {
+     safe: { source: r.source },
+     sensitive: { conversationId: t },
+@@ -156463,7 +156465,7 @@
+     a = `${e.hostId}:${t}`;
+   e.archivedPinnedThreadPlacements.delete(a);
+   let o;
+-  if (!e.useAppServerPins)
++  if (!serverOwned && !e.useAppServerPins)
+     try {
+       let n = await e.getPinnedThreadIds(),
+         r = n.indexOf(t);
+@@ -156477,11 +156479,11 @@
+     } catch {}
+   (e.addSuppressedArchivedConversationId(t), e.archivingConversationIds.add(t));
+   try {
+-    e.pendingThreadArchives.add(t, { cwd: n, cleanupWorktree: c });
++    !serverOwned && e.pendingThreadArchives.add(t, { cwd: n, cleanupWorktree: c });
+     try {
+-      await e.archiveThread(t);
++      await (serverOwned ? codexWebLifecycleCommand(`archive`, e.hostId, null, { threadId: t, archived: true, cleanupWorktree: c }) : e.archiveThread(t));
+     } catch (n) {
+-      if (!Rin(n, t))
++      if (serverOwned || !Rin(n, t))
+         throw (i || e.deleteSuppressedArchivedConversationId(t), n);
+       e.logger.info(`Archive skipped because thread has no active rollout`, {
+         safe: { conversationId: t },
+@@ -156502,7 +156504,7 @@
+       }
+       s = !0;
+     }
+-    if (!e.useAppServerPins)
++    if (!serverOwned && !e.useAppServerPins)
+       try {
+         (await e.setThreadPinned({ threadId: t, pinned: !1 }),
+           o !== void 0 &&
+@@ -159713,6 +159715,50 @@
+       };
+ }
+ var _cn = t(() => {});
++async function codexWebLifecycleEnabled(hostId, capability) {
++  const request = window.electronBridge?.serverCoordinatorRequest;
++  if (request == null) return false;
++  const capabilities = await request({ method: `codexWeb/capabilities`, params: { hostId } });
++  if (capabilities?.[capability] !== true)
++    throw Error(`The server has not enabled ${capability}. No operation was submitted.`);
++  return true;
++}
++async function codexWebLifecycleCommand(kind, hostId, requestId, command) {
++  const request = window.electronBridge.serverCoordinatorRequest;
++  const intentKey = requestId == null ? `codex-web-lifecycle-intent:${JSON.stringify([kind, hostId,
++    command.sourceThreadId ?? command.threadId, command.nativeParams?.lastTurnId ?? null,
++    command.nativeParams?.cwd ?? null, command.archived ?? null])}` : null;
++  if (intentKey != null) {
++    requestId = localStorage.getItem(intentKey) ?? crypto.randomUUID();
++    localStorage.setItem(intentKey, requestId);
++  }
++  const key = `codex-web-lifecycle:${kind}:${hostId}:${requestId}`;
++  const read = () => request({ method: `codexWeb/thread/${kind}/read`, params: { hostId, requestId } });
++  let receipt;
++  if (localStorage.getItem(key) != null) receipt = await read();
++  else {
++    localStorage.setItem(key, JSON.stringify({ kind, hostId, requestId }));
++    try {
++      receipt = await request({ method: `codexWeb/thread/${kind}`, params: { hostId, requestId, command } });
++    } catch (error) {
++      try { receipt = await read(); } catch {}
++      if (receipt == null)
++        throw Error(`The ${kind} result is unknown (request ${requestId}). Check this request before submitting another operation.`);
++    }
++  }
++  if (receipt == null) throw Error(`No authoritative ${kind} receipt is available for request ${requestId}. Do not resubmit it.`);
++  while ([`queued`, `running`].includes(receipt.status)) {
++    await new Promise((resolve) => setTimeout(resolve, 500));
++    receipt = await read();
++    if (receipt == null) throw Error(`The ${kind} receipt is unavailable for request ${requestId}. Do not resubmit it.`);
++  }
++  if (intentKey != null && ([`created`, `completed`, `success`].includes(receipt.status) ||
++      receipt.status === `failed` && receipt.threadId == null)) localStorage.removeItem(intentKey);
++  if (![`created`, `completed`, `success`].includes(receipt.status))
++    throw Error(receipt.errorMessage ?? receipt.error ?? receipt.synchronization?.message ?? `The ${kind} operation is ${receipt.status} (request ${requestId}). Check its receipt before retrying.`);
++  if (receipt.result?.success === false) throw Error(receipt.result.contentItems?.map((item) => item.text ?? ``).join(`\n`) || `The ${kind} operation failed.`);
++  return receipt;
++}
+ async function vcn({
+   beforeConversationAdded: e,
+   capabilities: t,
+@@ -159760,7 +159806,14 @@
+       i = m.trace?.trace,
+       d = i == null ? void 0 : { source: `thread_hydration`, trace: i };
+     return await s.run(!0, async (s) => {
+-      let v = await o.sendRequest(`thread/fork`, n, d),
++      const serverOwned = await codexWebLifecycleEnabled(o.getHostId(), `threadFork`);
++      const forkReceipt = serverOwned ? await codexWebLifecycleCommand(`fork`, o.getHostId(), c.clientThreadId ?? null, {
++        sourceThreadId: c.sourceConversationId,
++        nativeParams: n,
++        metadata: { projectAssignment: p, placement: t.placement, collaborationMode: c.collaborationMode,
++          sideConversationBoundaryItems: m.sideConversationBoundaryItems },
++      }) : null;
++      let v = serverOwned ? forkReceipt.forkResponse : await o.sendRequest(`thread/fork`, n, d),
+         y = Gg(v.thread.id);
+       ((_ = y), s(y));
+       let b = { status: `complete` };
+@@ -159784,7 +159837,7 @@
+             (b = { status: `failed`, message: cv(e) }));
+         }
+         (m.copyThreadMetadata(c.sourceConversationId, y),
+-          m.sideConversationBoundaryItems != null &&
++          !serverOwned && m.sideConversationBoundaryItems != null &&
+             (await o.sendRequest(
+               `thread/inject_items`,
+               { threadId: y, items: m.sideConversationBoundaryItems },
+@@ -159796,7 +159849,7 @@
+       } catch (e) {
+         b = { status: `failed`, message: cv(e) };
+       }
+-      let x = await ycn({
++      let x = serverOwned ? forkReceipt.synchronization : await ycn({
+         conversationId: y,
+         product: m,
+         resumeParams:
+@@ -159847,6 +159900,7 @@
+           synchronization: b,
+           projectAssignment: p,
+           sourceConversation: f,
++          serverOwned,
+         }
+       );
+     });
+@@ -159906,9 +159960,10 @@
+   params: r,
+ }) {
+   let { conversationId: i, projectAssignment: a, sourceConversation: o } = n;
++  const serverOwned = n.serverOwned === true;
+   try {
+     if (!r.ephemeral && a != null)
+-      (t.removeConversationId(i),
++      (!n.serverOwned && t.removeConversationId(i),
+         e.updateConversationState(i, (e) => {
+           ((e.workspaceKind = `project`),
+             (e.workspaceBrowserRoot = null),
+@@ -159917,14 +159972,14 @@
+     else if (!r.ephemeral && o?.workspaceKind === `projectless`) {
+       let n = o.workspaceBrowserRoot ?? null,
+         r = o.projectlessOutputDirectory ?? null;
+-      (await t.saveConversationId(i),
++      (!serverOwned && await t.saveConversationId(i),
+         e.updateConversationState(i, (e) => {
+           ((e.workspaceKind = `projectless`),
+             (e.workspaceBrowserRoot = n),
+             (e.projectlessOutputDirectory = r));
+         }),
+-        await t.saveOutputDirectoryHint(i, r),
+-        await t.saveWorkspaceRootHint(i, n));
++        !serverOwned && await t.saveOutputDirectoryHint(i, r),
++        !serverOwned && await t.saveWorkspaceRootHint(i, n));
+     }
+     return {
+       status: `created`,
+@@ -160782,6 +160837,7 @@
+               accountId: o,
+               sectionId: s.id,
+               beforeThreadId: t,
+               useAppServerSections: r,
++              accountState: e.storage.readValue(`sidebar-custom-sections-v3`)?.[o],
+             },
+     },
+@@ -460096,7 +460152,7 @@
+               )
+               .find((e) => e?.runtimeWorkspaceRoots.some((e) => y_(e) === h)),
+             _;
+-          await mYi({
++          if (window.electronBridge?.serverCoordinatorRequest == null) await mYi({
+             scope: t,
+             conversationId: e.sourceConversationId,
+             hostId: d.getHostId(),
+@@ -460139,6 +460195,20 @@
+                 n !== e.sourceConversationId &&
+                   cpr(t, zP(ZP(e.sourceConversationId)), zP(ZP(n))));
+             };
++          if (await codexWebLifecycleEnabled(d.getHostId(), `threadHandoff`)) {
++            const receipt = await codexWebLifecycleCommand(`handoff`, d.getHostId(), e.id, {
++              threadId: e.sourceConversationId, direction: e.direction,
++              worktreeBranch: e.worktreeBranch, localBranch: e.localBranch, sourceBranch: e.sourceBranch,
++              ...e.request,
++            });
++            const targetId = receipt.destinationThreadId;
++            if (typeof targetId !== `string`) throw Error(`The completed handoff receipt has no destination task.`);
++            b(targetId, receipt.destinationCwd);
++            u(e.sourceConversationId, targetId);
++            p(e.id, (state) => { state.status = `success`; for (const step of state.steps) step.status = `done`; });
++            if (E(e)) a(targetId);
++            return;
++          }
+           switch (e.direction) {
+             case `to-worktree`: {
+               let i = lE(t.get(II, e.sourceConversationId), c),
+@@ -460302,7 +460372,7 @@
+             p(e.id, (e) => {
+               ((e.status = `error`),
+                 (e.execOutput = null),
+-                (e.errorMessage = n.formatMessage({
++                (e.errorMessage = window.electronBridge?.serverCoordinatorRequest != null ? cv(r) : n.formatMessage({
+                   id: `localConversation.threadHandoff.error.unexpected`,
+                   defaultMessage: `Unexpected handoff failure. Please retry.`,
+                   description: `Error shown when the task handoff runtime throws unexpectedly`,

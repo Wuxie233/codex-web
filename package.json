@@ -5,6 +5,8 @@
     "README.md",
     "scratch/asar/**/*",
     "src/server/**/*.js",
+    "src/server/thread-tool-schemas.json",
+    "src/server/automation-tool-schema.json",
     "src/server/electron/index.js",
     "!**/*.ts",
     "scratch/webview-delivery/**/*"

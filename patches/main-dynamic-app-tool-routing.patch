@@ -1,42 +1,73 @@
 --- a/.vite/build/main-C5K7o1Hr.js
 +++ b/.vite/build/main-C5K7o1Hr.js
-@@ -135731,5 +135731,32 @@
+@@ -100009,10 +100009,11 @@
+   sendMessageToOrigin(e, t) {
+     this.windowManager.sendMessageToWebContents(e, t);
+   }
+-  requestDynamicToolsForThreadStart(e, t = !1, n = `default`) {
++  requestDynamicToolsForThreadStart(e, t = !1, n = `default`, hostId = this.hostId) {
+     let r = this.windowManager.getPrimaryWindow();
++    const merge = (tools) => t && globalThis.__codexThreadTools ? globalThis.__codexThreadTools.getDynamicTools(tools) : tools;
+     return r == null
+-      ? Promise.resolve([])
++      ? Promise.resolve(merge([]))
+       : new Promise((i) => {
+           let a = (0, g.randomUUID)(),
+             o = setTimeout(() => {
+@@ -100025,7 +100026,7 @@
+           }),
+             this.sendMessageToOrigin(r.webContents, {
+               type: `dynamic-tools-for-thread-start-requested`,
+-              hostId: this.hostId,
++              hostId,
+               requestId: a,
+               featureOverrides: e,
+               requestedHistoryMode: `legacy`,
+@@ -100035,7 +100036,11 @@
+               threadToolsEnabled: t,
+               useDefaultFeatureOverrides: !0,
+             }));
+-        });
++        }).catch((error) => {
++          if (!t || !globalThis.__codexThreadTools) throw error;
++          console.warn(`[codex-web] Client tool catalog unavailable; serving registered server tools`, String(error?.message ?? error));
++          return [];
++        }).then(merge);
+   }
+   resolvePendingDynamicToolsForThreadStartRequestsForOrigin(e) {
+     for (let [t, n] of this.pendingDynamicToolsForThreadStartRequests.entries())
+@@ -135731,6 +135736,28 @@
+   }
    async callDynamicAppTool(e, t) {
      t.throwIfAborted();
 +    if (e.params?.namespace === `codex_app`) {
++      const automation = await globalThis.__codexAutomations?.handle(e.hostId, e.params, t);
++      if (automation != null) return automation;
 +      if (e.params.tool === `send_message_to_thread` && globalThis.__codexThreadMessages)
 +        return globalThis.__codexThreadMessages.send(e.hostId, e.params, t);
-+      const result = await globalThis.__codexThreadQueries?.handle(e.hostId, e.params, t);
++      if (e.params.tool === `create_thread` && globalThis.__codexThreadCreations)
++        return globalThis.__codexThreadCreations.create(e.hostId, e.params, t);
++      const fork = await globalThis.__codexThreadForks?.handle(e.hostId, e.params, t);
++      if (fork != null) return fork;
++      const handoff = await globalThis.__codexThreadHandoffs?.handle(e.hostId, e.params, t);
++      if (handoff != null) return handoff;
++      const management = await globalThis.__codexThreadManagement?.handle(e.hostId, e.params, t);
++      if (management != null) return management;
++      const discovery = await globalThis.__codexThreadTools?.handle(e.hostId, e.params, t);
++      if (discovery != null) return discovery;
++      const forkQuery = await globalThis.__codexThreadForks?.handleQuery(e.params, t);
++      if (forkQuery?.result != null) return forkQuery.result;
++      const resolved = await globalThis.__codexThreadCreations?.handleQuery(e.hostId, forkQuery?.params ?? e.params, t);
++      if (resolved?.result != null) return resolved.result;
++      const result = await globalThis.__codexThreadQueries?.handle(e.hostId, resolved?.params ?? e.params, t);
 +      if (result != null) return result;
-+      // Worktree creation remains native. Wait only before dispatch so a browser
-+      // reconnecting after restart can recover without replaying a creation.
-+      if (e.params.tool === `create_thread`) {
-+        const ready = () => [...this.readyAppViewWebContentsIds].some((id) => {
-+          const contents = l.webContents.fromId(id);
-+          return this.appViewsByWebContentsId.has(id) && contents != null && !contents.isDestroyed();
-+        });
-+        for (let attempt = 0; !ready() && attempt < 120; attempt++) {
-+          await new Promise((resolve, reject) => {
-+            const aborted = () => { clearTimeout(timer); reject(t.reason ?? Error(`App tool call aborted`)); };
-+            const timer = setTimeout(() => { t.removeEventListener(`abort`, aborted); resolve(); }, 250);
-+            t.addEventListener(`abort`, aborted, { once: !0 });
-+            if (t.aborted) { t.removeEventListener(`abort`, aborted); aborted(); }
-+          });
-+          t.throwIfAborted();
-+        }
-+        if (!ready()) return {
-+          success: false,
-+          contentItems: [{ type: `inputText`, text: `Task creation was not dispatched: no app window reconnected within 30 seconds. Reconnect a Codex Web page before retrying this creation.` }],
-+        };
-+      }
 +    }
      const primary = this.options.windowManager.getPrimaryWindow()?.webContents.id;
      const candidates = [
        ...(primary == null ? [] : [primary]),
-@@ -136366,6 +136393,43 @@
+@@ -136366,5 +136393,48 @@
        });
      }
-     codexWebInstallRemoteBrowserTools(m, e, (message) => this.options.windowManager.sendMessageToAllWindows(message));
 +    const threadAdapter = {
 +      readThread: (id) => m.readThread(id, { includeTurns: false }),
 +      resumeThread: (id, options) => m.resumeThread(id, options),
@@ -44,9 +75,11 @@
 +    };
 +    globalThis.__codexThreadMessages?.registerHost(e, threadAdapter);
 +    globalThis.__codexThreadQueries?.registerHost(e, threadAdapter);
++    globalThis.__codexThreadTools?.registerHost(e, threadAdapter);
++    globalThis.__codexThreadManagement?.registerHost(e, threadAdapter);
 +    // One executor serves both the MCP pipe and dynamic app-server tool calls.
 +    // Thread messaging and queries must not depend on a ready browser window.
-+    const appToolNames = new Set([`create_thread`, `list_projects`, `list_threads`, `read_thread`, `wait_threads`, `send_message_to_thread`]);
++    const appToolNames = new Set([`fork_thread`, `handoff_thread`, `get_handoff_status`, `automation_update`, `create_thread`, `list_projects`, `list_threads`, `read_thread`, `wait_threads`, `send_message_to_thread`, `list_archived_threads`, `set_thread_archived`, `set_thread_title`, `set_thread_pinned`]);
 +    const pendingAppTools = new Map();
 +    m.registerInternalNotificationHandler((notification) => {
 +      if (notification.method !== `turn/completed`) return;
@@ -60,9 +93,11 @@
 +      handler: (request) => {
 +        const params = request.params;
 +        if (params?.namespace !== `codex_app` || !appToolNames.has(params.tool)) return null;
++        const key = JSON.stringify([params.threadId, params.turnId, params.callId]);
++        const pending = pendingAppTools.get(key);
++        if (pending) return pending.result;
 +        const controller = new AbortController();
-+        pendingAppTools.set(params.callId, { threadId: params.threadId, turnId: params.turnId, controller });
-+        return this.callDynamicAppTool({ hostId: e, params }, controller.signal)
++        const result = this.callDynamicAppTool({ hostId: e, params }, controller.signal)
 +          .then((result) => result ?? {
 +            success: false,
 +            contentItems: [{ type: `inputText`, text: `No ready app window accepted this tool call. It was not dispatched.` }],
@@ -71,9 +106,21 @@
 +            success: false,
 +            contentItems: [{ type: `inputText`, text: String(error?.message ?? error) }],
 +          }))
-+          .finally(() => pendingAppTools.delete(params.callId));
++          .finally(() => pendingAppTools.delete(key));
++        pendingAppTools.set(key, { threadId: params.threadId, turnId: params.turnId, controller, result });
++        return result;
 +      },
 +    });
      return (
        m.registerInternalServerRequestHandler({
          methods: [
+@@ -136476,5 +136546,9 @@
+   }
+   disposeRemoteConnection(e) {
++    globalThis.__codexThreadMessages?.unregisterHost(e);
++    globalThis.__codexThreadQueries?.unregisterHost(e);
++    globalThis.__codexThreadTools?.unregisterHost(e);
++    globalThis.__codexThreadManagement?.unregisterHost(e);
+     this.threadCatalogSyncManager?.detachSource(e);
+     let t = this.appServerConnectionRegistry.getMaybeConnection(e);
+     t &&

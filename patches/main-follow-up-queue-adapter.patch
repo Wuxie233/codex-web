@@ -1,0 +1,81 @@
+--- a/.vite/build/main-C5K7o1Hr.js
++++ b/.vite/build/main-C5K7o1Hr.js
+@@ -71347,6 +71347,8 @@
+       "set-global-state": async ({ key: e, value: t }) => {
++        if (e === `queued-follow-ups` && globalThis.__codexFollowUpQueue)
++          throw Error(`Queued messages are managed by the server. Reload this client.`);
+         if ($L.has(e)) throw Error(`Direct writes to ${e} are not allowed`);
+         return (this.setGlobalStateValue(e, t), { success: !0 });
+       },
+       "queued-follow-up-send-lock-acquire": async ({
+         conversationId: e,
+@@ -71356,1 +71358,1 @@
+-        acquired: this.queuedFollowUpSendLocks.tryAcquire({
++        acquired: !globalThis.__codexFollowUpQueue && this.queuedFollowUpSendLocks.tryAcquire({
+@@ -135148,3 +135148,66 @@
++    if (globalThis.__codexFollowUpQueue) {
++      const fetch = this.fetchHandler;
++      const connection = (hostId) => this.appServerConnectionRegistry.getConnection(hostId);
++      globalThis.__codexFollowUpQueue.registerAdapter({
++        readLegacy: () => fetch.globalState.get(`queued-follow-ups`) ?? {},
++        publish: (queues) => fetch.setGlobalStateValue(`queued-follow-ups`, queues),
++        inspect: async (hostId, threadId) => {
++          const host = connection(hostId);
++          let thread = await host.readThread(threadId, { includeTurns: true });
++          if (!thread || thread.id !== threadId || thread.parentThreadId != null || thread.source?.subAgent != null)
++            throw Error(`Queued messages require an available parent task.`);
++          let cursor = null;
++          do {
++            const page = await host.sendAppServerRequest(`thread/list`, { archived: true, cursor, limit: 100, sourceKinds: [], modelProviders: [] });
++            if (!Array.isArray(page.data)) throw Error(`Unable to verify queue task archive state.`);
++            if (page.data.some((entry) => entry.id === threadId)) throw Error(`Unarchive this task before sending queued messages.`);
++            cursor = page.nextCursor ?? null;
++          } while (cursor != null);
++          if (thread.status?.type === `notLoaded`) {
++            await host.resumeThread(threadId, { cwd: thread.cwd, path: thread.path });
++            thread = await host.readThread(threadId, { includeTurns: true });
++          }
++          if (![`idle`, `active`].includes(thread.status?.type)) throw Error(`The queued task is not ready.`);
++          const last = thread.turns?.at(-1);
++          if (thread.status.type === `active` && last?.status !== `inProgress`) throw Error(`The active turn could not be resolved.`);
++          return { activeTurnId: last?.status === `inProgress` ? last.id : undefined, lastTurnId: last?.id, interrupted: last?.status === `interrupted` };
++        },
++        inject: async (hostId, threadId, items) => {
++          await connection(hostId).sendAppServerRequest(`thread/inject_items`, { threadId, items });
++        },
++        settle: async (threadId, submission) => {
++          const roots = submission.workspaceCommit?.writableRoots;
++          if (roots) {
++            const current = fetch.globalState.get(`thread-writable-roots`) ?? {};
++            const next = roots.kind === `replace` ? roots.roots : [...new Set([...(current[threadId] ?? []), ...roots.roots])];
++            fetch.setGlobalStateValue(`thread-writable-roots`, { ...current, [threadId]: next });
++          }
++        },
++        send: async (hostId, threadId, submission, activeTurnId) => {
++          const host = connection(hostId);
++          let result;
++          try {
++            result = activeTurnId == null
++              ? await host.startTurn({ ...submission.request, threadId })
++              : await host.sendAppServerRequest(`turn/steer`, { threadId, expectedTurnId: activeTurnId,
++                  input: submission.steer.input, clientUserMessageId: submission.request.clientUserMessageId,
++                  additionalContext: submission.steer.additionalContext,
++                  responsesapiClientMetadata: submission.request.responsesapiClientMetadata });
++          } catch (error) {
++            const message = error instanceof Error ? error.message : String(error);
++            if (activeTurnId != null && (message === `no active turn to steer` ||
++                /expected active turn id `?[^`\s]+`? but found `?([^`\s]+)`?/.test(message) ||
++                /ExpectedTurnMismatch\s*\{[^}]*actual:\s*"([^"]+)"/.test(message))) {
++              throw Object.assign(Error(`Interrupted before the steer was accepted.`), { queueDeliveryRejected: true });
++            }
++            throw error;
++          }
++          const turnId = result.turn?.id ?? result.turnId;
++          if (typeof turnId !== `string`) throw Error(`Queued message acknowledgement did not contain a turn ID.`);
++          return { turnId };
++        },
++      });
++    }
+     let { downloadStore: M } = this.messageHandler.getBrowserHostManager();
+     (M.setChangeListener(() => {
+       this.broadcastDownloadsState();

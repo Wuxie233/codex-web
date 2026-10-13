@@ -126,6 +126,10 @@ export class ThreadQueries {
     this.hosts.set(hostId, adapter);
   }
 
+  unregisterHost(hostId: string): void {
+    this.hosts.delete(hostId);
+  }
+
   private host(hostId: string, signal: AbortSignal): ThreadQueryHost {
     const host = this.hosts.get(hostId);
     if (!host) throw Error(`Unknown Codex host: ${hostId}`);

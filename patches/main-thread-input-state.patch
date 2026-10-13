@@ -1,0 +1,31 @@
+--- a/.vite/build/main-C5K7o1Hr.js
++++ b/.vite/build/main-C5K7o1Hr.js
+@@ -135152,3 +135152,28 @@
++    if (globalThis.__codexThreadInputGuard) {
++      const fetch = this.fetchHandler;
++      const browser = this.messageHandler.getBrowserHostManager();
++      globalThis.__codexThreadInputGuard.registerAdapter({
++        assertInputWritable: (hostId, threadId) => globalThis.__codexThreadHandoffs.assertInputWritable(hostId, threadId),
++        readState: () => fetch.globalState.get(`codex-web-thread-input-state-v1`) ?? {},
++        writeState: (state) => fetch.globalState.set(`codex-web-thread-input-state-v1`, state),
++        readGlobal: (key) => fetch.globalState.get(key),
++        writeGlobal: (key, value) => fetch.setGlobalStateValue(key, value),
++        publishAtom: (key, value) => this.messageHandler.windowManager.sendMessageToAllWindows({
++          type: `persisted-atom-updated`, key, value: value === undefined ? null : value, deleted: value === undefined,
++        }),
++        readQueue: async (threadId) => {
++          if (!globalThis.__codexFollowUpQueue) throw Error(`Server queue state is not initialized.`);
++          return globalThis.__codexFollowUpQueue.handle({ method: `read`, params: { conversationId: threadId } });
++        },
++        transferBrowser: (sourceId, targetId) => {
++          for (const window of browser.windows.values()) {
++            const tabs = [...window.threads.values()].filter((tab) => tab.conversationId === sourceId);
++            for (const tab of tabs) browser.transferConversationState(window,
++              sourceId, tab.browserTabId, targetId, tab.browserTabId);
++          }
++        },
++      });
++    }
+     let { downloadStore: M } = this.messageHandler.getBrowserHostManager();
+     (M.setChangeListener(() => {
+       this.broadcastDownloadsState();

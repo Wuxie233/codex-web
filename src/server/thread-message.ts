@@ -50,6 +50,10 @@ export class ThreadMessages {
     this.hosts.set(hostId, adapter);
   }
 
+  unregisterHost(hostId: string): void {
+    this.hosts.delete(hostId);
+  }
+
   private save(): void {
     mkdirSync(dirname(this.statePath), { recursive: true, mode: 0o700 });
     const temporary = `${this.statePath}.${randomUUID()}.tmp`;

@@ -1,0 +1,40 @@
+--- a/webview/assets/app-initial-236e1501144c.js
++++ b/webview/assets/app-initial-236e1501144c.js
+@@ -302562,3 +302562,15 @@
+-function rYi(e, t, n) {
++async function rYi(e, t, n, hostId, input, operationId) {
+   t != null && e.set(aYi, t, e.get(aYi, t) + n);
++  const request = window.electronBridge?.serverCoordinatorRequest;
++  if (t == null || request == null) return;
++  if (n > 0) {
++    operationId = crypto.randomUUID();
++    await request({ method: `codexWeb/thread/input/report`, params: {
++      phase: `begin`, hostId, threadId: t, operationId, draftKey: rK(e.value), input,
++    } });
++    return operationId;
++  }
++  if (operationId != null) await request({ method: `codexWeb/thread/input/report`, params: {
++    phase: `complete`, hostId, threadId: t, operationId,
++  } });
+ }
+--- a/webview/assets/app-primary-6b28e06666ff.js
++++ b/webview/assets/app-primary-6b28e06666ff.js
+@@ -402722,4 +402722,5 @@
+-        (toe(o, a, 1),
+-          await (async () => {
++        let serverInputOperation;
++        await (async () => {
+             try {
++              serverInputOperation = await toe(o, a, 1, r, { text: e, label: n, codeBlockLanguage: t });
+               let a = await VPr({
+--- a/webview/assets/app-primary-6b28e06666ff.js
++++ b/webview/assets/app-primary-6b28e06666ff.js
+@@ -402754,4 +402754,5 @@
+-          })().finally(() => {
+-            (d.fail(), toe(o, a, -1));
+-          }));
++          })().finally(async () => {
++            d.fail();
++            await toe(o, a, -1, r, undefined, serverInputOperation);
++          });
+       }),

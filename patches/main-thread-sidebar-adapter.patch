@@ -1,0 +1,96 @@
+--- a/.vite/build/main-C5K7o1Hr.js
++++ b/.vite/build/main-C5K7o1Hr.js
+@@ -135152,3 +135152,93 @@
++    {
++      const fetch = this.fetchHandler;
++      const sidebarKey = `sidebar-custom-sections-v3`;
++      const readAccounts = () => fetch.globalState.get(`electron-persisted-atom-state`)?.[sidebarKey] ?? {};
++      const writeAccount = async (accountId, state) => {
++        const atoms = { ...(fetch.globalState.get(`electron-persisted-atom-state`) ?? {}) };
++        atoms[sidebarKey] = { ...readAccounts(), [accountId]: state };
++        fetch.globalState.set(`electron-persisted-atom-state`, atoms);
++        await fetch.globalState.flush();
++        this.messageHandler.windowManager.sendMessageToAllWindows({ type: `persisted-atom-updated`, key: sidebarKey, value: atoms[sidebarKey], deleted: false });
++      };
++      globalThis.__codexThreadSidebar = {
++        placeFork: async ({ hostId, threadId, placement }) => {
++          const custom = placement.customSection;
++          if (!custom) return;
++          const host = this.appServerConnectionRegistry.getConnection(hostId);
++          const assertAccount = async () => {
++            if ((await host.getAuthenticatedPrincipal())?.accountId !== custom.accountId)
++              throw Error(`Fork placement account retired`);
++          };
++          await assertAccount();
++          const original = readAccounts()[custom.accountId] ?? custom.accountState;
++          if (!original?.sections?.some((section) => section.id === custom.sectionId))
++            throw Error(`Fork sidebar section snapshot is unavailable`);
++          const item = `codex:thread:local:${threadId}`;
++          const before = `codex:thread:local:${custom.beforeThreadId}`;
++          let state = { ...original, sections: original.sections.map((section) => {
++            const itemKeys = section.itemKeys.filter((key) => key !== item);
++            if (section.id === custom.sectionId) {
++              const at = itemKeys.indexOf(before);
++              itemKeys.splice(at < 0 ? itemKeys.length : at, 0, item);
++            }
++            const pending = section.pendingDeletionHostIdsByItemKey;
++            return { ...section, appearance: null, itemKeys,
++              ...(pending == null ? {} : { pendingDeletionHostIdsByItemKey: Object.fromEntries(Object.entries(pending).filter(([key]) => key !== item && itemKeys.includes(key))) }) };
++          }) };
++          await writeAccount(custom.accountId, state);
++          if (!custom.useAppServerSections || !me(host.appServerVersion)) return;
++          const section = state.sections.find((section) => section.id === custom.sectionId);
++          try {
++          let sectionId = section.hostSectionIds?.[hostId];
++          const effectKey = JSON.stringify([hostId, custom.accountId, custom.sectionId]);
++          const effects = () => fetch.globalState.get(`codex-web-fork-sidebar-effects-v1`) ?? {};
++          if (sectionId == null) {
++            const previous = effects()[effectKey];
++            if (previous?.status === `pending`)
++              throw Error(`Fork section creation outcome is unknown; inspect the existing fork instead of creating another section`);
++            sectionId = previous?.sectionId;
++            if (sectionId == null) {
++              fetch.globalState.set(`codex-web-fork-sidebar-effects-v1`, { ...effects(), [effectKey]: { status: `pending`, threadId } });
++              await fetch.globalState.flush();
++              await assertAccount();
++              const created = await fetch.pinnedThreadsService.createSection({ hostId,
++                logicalSectionId: section.id, name: section.name, threadIdToMove: threadId });
++              sectionId = created.id;
++              fetch.globalState.set(`codex-web-fork-sidebar-effects-v1`, { ...effects(), [effectKey]: { status: `created`, sectionId } });
++              await fetch.globalState.flush();
++            }
++            await assertAccount();
++            const latest = readAccounts()[custom.accountId];
++            state = { ...latest, sections: latest.sections.map((entry) => entry.id === custom.sectionId
++              ? { ...entry, hostSectionIds: { ...entry.hostSectionIds, [hostId]: sectionId } } : entry) };
++            await writeAccount(custom.accountId, state);
++          }
++          const members = new Set(await fetch.pinnedThreadsService.listSectionThreadIds({ hostId, sectionId }));
++          await assertAccount();
++          const next = section.itemKeys.slice(section.itemKeys.indexOf(item) + 1)
++            .filter((key) => key.startsWith(`codex:thread:local:`)).map((key) => key.slice(19)).find((id) => members.has(id)) ?? null;
++          if (!(await fetch.pinnedThreadsService.setThreadSection({ hostId, threadId, sectionId, beforeThreadId: next })))
++            throw Error(`Accepted fork could not be placed in its sidebar section`);
++          } catch (error) {
++            const latest = readAccounts()[custom.accountId];
++            const current = latest?.sections.find((entry) => entry.itemKeys.includes(item));
++            const expectedNext = section.itemKeys[section.itemKeys.indexOf(item) + 1];
++            if (current?.id === section.id && current.itemKeys[current.itemKeys.indexOf(item) + 1] === expectedNext) {
++              const previous = original.sections.find((entry) => entry.itemKeys.includes(item));
++              await writeAccount(custom.accountId, { ...latest, sections: latest.sections.map((entry) => {
++                const itemKeys = entry.itemKeys.filter((key) => key !== item);
++                if (entry.id === previous?.id) {
++                  const at = itemKeys.indexOf(previous.itemKeys[previous.itemKeys.indexOf(item) + 1]);
++                  itemKeys.splice(at < 0 ? itemKeys.length : at, 0, item);
++                }
++                return { ...entry, itemKeys };
++              }) });
++            }
++            throw error;
++          }
++        },
++      };
++    }
+     let { downloadStore: M } = this.messageHandler.getBrowserHostManager();
+     (M.setChangeListener(() => {
+       this.broadcastDownloadsState();

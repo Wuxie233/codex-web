@@ -1,0 +1,279 @@
+--- a/.vite/build/main-C5K7o1Hr.js
++++ b/.vite/build/main-C5K7o1Hr.js
+@@ -135148,3 +135148,276 @@
++    // Handoff runs in the main process; UI state is an explicitly verified input boundary.
++    if (globalThis.__codexThreadHandoffs) {
++      const fetch = this.fetchHandler;
++      const connection = (hostId) => this.appServerConnectionRegistry.getConnection(hostId);
++      const client = (hostId) => fetch.getAppServerClientForHostIdOrThrow(hostId);
++      const git = (hostId, method, params) => fetch.requestGitWorker({ method,
++        params: { ...params, hostConfig: client(hostId).hostConfig, operationSource: `local_remote_dropdown` } });
++      const normalize = (path) => String(path).replaceAll(`\\`, `/`).replace(/\/+$/, ``);
++      const under = (path, root) => normalize(path) === normalize(root) || normalize(path).startsWith(`${normalize(root)}/`);
++      const accountKey = async (hostId) => {
++        const value = await connection(hostId).getAuthenticatedPrincipal();
++        const bytes = await globalThis.crypto.subtle.digest(`SHA-256`, new TextEncoder().encode(JSON.stringify(value)));
++        return Array.from(new Uint8Array(bytes), (byte) => byte.toString(16).padStart(2, `0`)).join(``);
++      };
++      const assertAccount = async (plan) => {
++        if (await accountKey(plan.sourceHostId) !== plan.sourceAccount || await accountKey(plan.destinationHostId) !== plan.destinationAccount)
++          throw Error(`Handoff account changed; inspect the existing operation before continuing.`);
++      };
++      const requireCrossHostGate = async (hostId) => {
++        if (!globalThis.__codexReadAccountGate || !await globalThis.__codexReadAccountGate(connection(hostId), `2256010998`))
++          throw Error(`Cross-host thread handoff is not enabled for the current account.`);
++      };
++      const originKey = (value) => {
++        if (typeof value !== `string` || !value) return null;
++        try {
++          const url = new URL(value.includes(`://`) ? value : `ssh://${value.replace(/^([^@]+@)?([^:]+):/, `$1$2/`)}`);
++          if (!url.hostname) return null;
++          return `${url.hostname}/${url.pathname.replace(/^\/+/, ``).replace(/\.git$/, ``).replace(/\/+$/, ``)}`.toLowerCase();
++        } catch { return null; }
++      };
++      const assertInputReady = async (hostId, threadId) => {
++        const queued = fetch.globalState.get(n.Sc.QUEUED_FOLLOW_UPS)?.[threadId];
++        if (queued != null && (!Array.isArray(queued) || queued.length))
++          throw Error(`Thread ${threadId} has queued follow-ups. Send or remove them before handoff.`);
++        // Pending pasted attachments exist in the renderer today. Require the coordinator's
++        // authoritative guard; absence is not evidence that unsent input is empty.
++        if (!globalThis.__codexThreadInputGuard?.assertHandoffReady)
++          throw Error(`Thread handoff requires the server input-state guard; pending composer state cannot yet be verified.`);
++        await globalThis.__codexThreadInputGuard.assertHandoffReady(hostId, threadId);
++      };
++      globalThis.__codexThreadHandoffs.registerAdapter({
++        prepare: async (sourceHostId, args) => {
++          let thread;
++          if (args.direction) thread = await connection(sourceHostId).readThread(args.threadId, { includeTurns: true });
++          else {
++            const matches = [];
++            for (const hostId of this.appServerConnectionRegistry.getAllHostIds()) {
++              try {
++                const candidate = await connection(hostId).readThread(args.threadId, { includeTurns: true });
++                if (candidate?.id === args.threadId) matches.push({ hostId, thread: candidate });
++              } catch (error) { if (!/not found|no rollout found|does not exist/i.test(String(error))) throw error; }
++            }
++            if (matches.length !== 1) throw Error(matches.length ? `Handoff source is ambiguous across hosts.` : `Handoff source was not found.`);
++            sourceHostId = matches[0].hostId;
++            thread = matches[0].thread;
++          }
++          if (!thread || thread.id !== args.threadId || !thread.cwd || thread.cwd === `/` || thread.workspaceKind === `projectless` || (fetch.globalState.get(n.Sc.PROJECTLESS_THREAD_IDS) ?? []).includes(thread.id) || thread.source?.subAgent || thread.parentThreadId)
++            throw Error(`Only project-scoped parent Git tasks can be handed off.`);
++          await assertInputReady(sourceHostId, thread.id);
++          const metadata = await git(sourceHostId, `stable-metadata`, { cwd: n.ko(thread.cwd) });
++          if (!metadata) throw Error(`The source workspace is not a Git repository.`);
++          const { branch } = await git(sourceHostId, `current-branch`, { root: metadata.root });
++          if (args.cwd != null && normalize(args.cwd) !== normalize(thread.cwd)) throw Error(`Source task workspace changed since the handoff dialog opened.`);
++          if (args.sourceBranch != null && branch != null && args.sourceBranch !== branch) throw Error(`Source branch changed since the handoff dialog opened.`);
++          const home = await fetch.handlers[`codex-home`]({ hostId: sourceHostId });
++          const plan = { sourceHostId, sourceThreadId: thread.id, destinationHostId: sourceHostId,
++            cwd: thread.cwd, gitRoot: metadata.root, sourceBranch: branch, threadTitle: thread.name ?? thread.preview ?? thread.id,
++            workspaceRoots: fetch.globalState.get(n.Sc.THREAD_WRITABLE_ROOTS)?.[thread.id] ?? thread.runtimeWorkspaceRoots ?? [thread.cwd], direction: `to-worktree`, warnings: [],
++            sourceAccount: await accountKey(sourceHostId), destinationAccount: await accountKey(args.destinationHostId ?? sourceHostId) };
++          if (args.destinationHostId != null && args.destinationHostId !== sourceHostId) {
++            await requireCrossHostGate(sourceHostId);
++            if (args.direction && args.direction !== `to-host-worktree`) throw Error(`Cross-host handoff requires to-host-worktree direction.`);
++            if (thread.historyMode === `paginated`) throw Error(`Paginated chats cannot be continued on another host yet.`);
++            if (typeof thread.path !== `string` || !thread.path.trim()) throw Error(`This task does not have a rollout file to move.`);
++            const destinationHostId = args.destinationHostId;
++            const { roots } = await fetch.handlers[`workspace-root-options`]({ hostId: destinationHostId });
++            const [{ origins: sourceOrigins }, { origins: destinationOrigins }] = await Promise.all([
++              fetch.handlers[`git-origins`]({ hostId: sourceHostId, dirs: [thread.cwd] }),
++              fetch.handlers[`git-origins`]({ hostId: destinationHostId, dirs: roots }),
++            ]);
++            const sourceOrigin = sourceOrigins.find((entry) => normalize(entry.dir) === normalize(thread.cwd));
++            const key = originKey(sourceOrigin?.originUrl);
++            const relative = under(thread.cwd, metadata.root) ? normalize(thread.cwd).slice(normalize(metadata.root).length) : null;
++            const candidates = roots.map((root) => ({ root, origin: destinationOrigins.find((entry) => normalize(entry.dir) === normalize(root)) }))
++              .filter(({ root, origin }) => key && origin && originKey(origin.originUrl) === key && under(root, origin.root) && normalize(root).slice(normalize(origin.root).length) === relative);
++            const destination = args.destinationWorkspaceRoot != null
++              ? candidates.find(({ root }) => normalize(root) === normalize(args.destinationWorkspaceRoot))
++              : candidates.find(({ origin }) => normalize(origin.root).split(`/`).at(-1) === normalize(metadata.root).split(`/`).at(-1)) ?? candidates[0];
++            if (!destination) throw Error(`No matching saved project was found on the destination host.`);
++            plan.direction = `to-host-worktree`;
++            plan.destinationHostId = destinationHostId;
++            plan.destinationWorkspaceRoot = destination.root;
++            plan.sourceRolloutPath = thread.path;
++            plan.sourceBranch = args.sourceBranch ?? branch;
++            if (!plan.sourceBranch) {
++              const prefix = fetch.settingsStore?.getEffective(`git-branch-prefix`) ?? `codex/`;
++              const slug = plan.threadTitle.trim().toLowerCase().split(/\s+/).slice(0, 5).map((word) => word.replace(/[^a-z0-9]/g, ``)).filter(Boolean).join(`-`) || thread.id;
++              plan.sourceBranch = `${prefix}${slug}`;
++            }
++            const project = destinationHostId === `local`
++              ? Object.values(this.projectsManager.getLocalProjects()).find((entry) => entry.rootPaths.some((root) => normalize(root) === normalize(destination.root)))
++              : this.projectsManager.getRemoteProjects().find((entry) => entry.hostId === destinationHostId && normalize(entry.remotePath) === normalize(destination.root));
++            if (!project) throw Error(`Destination saved project is unavailable.`);
++            plan.projectAssignment = { projectId: project.id, projectKind: destinationHostId === `local` ? `local` : `remote`, ...(destinationHostId === `local` ? {} : { hostId: destinationHostId }) };
++            if (thread.forkedFromId) {
++              try {
++                const existing = await git(destinationHostId, `resolve-worktree-for-thread`, { cwd: destination.root, conversationId: thread.forkedFromId });
++                plan.destinationWorktreeGitRoot = existing.worktreeGitRoot;
++                plan.destinationWorktreeWorkspaceRoot = existing.worktreeWorkspaceRoot;
++                plan.stashDestinationWorktree = existing.hasUncommittedChanges;
++              } catch {
++                // Native handoff creates a new destination when read-only reuse discovery fails.
++                plan.warnings.push(`Existing destination worktree could not be resolved; a new worktree will be created.`);
++              }
++            }
++            return plan;
++          }
++          if (args.direction === `to-host-worktree`) throw Error(`Cross-host handoff requires a different destination host.`);
++          if (under(thread.cwd, home.worktreesSegment)) {
++            const [{ worktrees }, managed] = await Promise.all([
++              git(sourceHostId, `list-worktrees`, { cwd: thread.cwd }),
++              git(sourceHostId, `codex-worktrees`, { worktreesRoot: home.worktreesSegment }),
++            ]);
++            const managedPaths = new Set(managed.worktrees.map((entry) => normalize(entry.dir)));
++            const local = worktrees.find((entry) => (args.localGitRoot == null || normalize(entry.root) === normalize(args.localGitRoot)) && normalize(entry.root) !== normalize(metadata.root) && !managedPaths.has(normalize(entry.root)) && !under(entry.root, home.worktreesSegment));
++            if (!local) throw Error(`No checkout was found for the source worktree.`);
++            const suffix = under(thread.cwd, metadata.root) ? normalize(thread.cwd).slice(normalize(metadata.root).length) : ``;
++            plan.direction = `to-local`;
++            plan.localGitRoot = local.root;
++            plan.destinationCwd = normalize(local.root) + suffix;
++            plan.worktreeGitRoot = metadata.root;
++            if (args.localWorkspaceRoot != null && normalize(args.localWorkspaceRoot) !== normalize(plan.destinationCwd)) throw Error(`Selected local workspace does not match the source repository layout.`);
++            if (args.worktreeRoot != null && normalize(args.worktreeRoot) !== normalize(metadata.root)) throw Error(`Source worktree changed since the dialog opened.`);
++            if (args.sourceBranch != null) plan.sourceBranch = args.sourceBranch;
++            if (!branch) {
++              const prefix = fetch.settingsStore?.getEffective(`git-branch-prefix`) ?? `codex/`;
++              const slug = plan.threadTitle.trim().toLowerCase().split(/\s+/).slice(0, 5).map((word) => word.replace(/[^a-z0-9]/g, ``)).filter(Boolean).join(`-`) || thread.id;
++              plan.sourceBranch = `${prefix}${slug}`;
++            }
++          } else {
++            if (!branch) throw Error(`The source checkout is detached. Check out a branch before handoff.`);
++            const { branch: defaultBranch } = await git(sourceHostId, `default-branch`, { root: metadata.root });
++            plan.defaultBranch = defaultBranch;
++            const prefix = fetch.settingsStore?.getEffective(`git-branch-prefix`) ?? `codex/`;
++            const slug = plan.threadTitle.trim().toLowerCase().split(/\s+/).slice(0, 5).map((word) => word.replace(/[^a-z0-9]/g, ``)).filter(Boolean).join(`-`) || thread.id;
++            plan.worktreeCheckoutBranch = args.worktreeBranch ?? (branch === defaultBranch ? `${prefix}${slug}` : branch);
++            plan.localCheckoutBranch = args.localBranch ?? null;
++            if (branch !== defaultBranch) {
++              const { branches } = await git(sourceHostId, `recent-branches`, { root: metadata.root });
++              plan.localCheckoutBranch = args.localBranch ?? [defaultBranch, ...branches].find((name) => name && name !== branch);
++              if (!plan.localCheckoutBranch) throw Error(`No other checkout branch is available before handoff.`);
++            }
++            let existing = {};
++            try { existing = await git(sourceHostId, `resolve-worktree-for-thread`, { cwd: thread.cwd, conversationId: thread.id }); }
++            catch { plan.warnings.push(`Existing source worktree could not be resolved; a new worktree will be created.`); }
++            if (existing.worktreeGitRoot && existing.worktreeWorkspaceRoot) {
++              plan.worktreeGitRoot = existing.worktreeGitRoot;
++              plan.destinationCwd = existing.worktreeWorkspaceRoot;
++              plan.stashTargetWorktree = existing.hasUncommittedChanges;
++              plan.createdWorktree = false;
++            }
++          }
++          if (args.direction && args.direction !== plan.direction) throw Error(`Source workspace no longer matches the selected handoff direction.`);
++          if (plan.direction === `to-worktree` && args.defaultBranch != null && args.defaultBranch !== plan.defaultBranch) throw Error(`Repository default branch changed since the handoff dialog opened.`);
++          return plan;
++        },
++        interrupt: async (plan) => {
++          await assertAccount(plan);
++          await assertInputReady(plan.sourceHostId, plan.sourceThreadId);
++          const conn = connection(plan.sourceHostId);
++          let thread = await conn.readThread(plan.sourceThreadId, { includeTurns: true });
++          if (thread.status?.type !== `active`) return;
++          const turn = [...(thread.turns ?? [])].reverse().find((turn) => turn.status === `inProgress`);
++          if (!turn?.id) throw Error(`Active source task has no readable turn to interrupt.`);
++          await conn.sendAppServerRequest(`turn/interrupt`, { threadId: plan.sourceThreadId, turnId: turn.id });
++          const deadline = Date.now() + 30000;
++          do {
++            thread = await conn.readThread(plan.sourceThreadId, { includeTurns: false });
++            if (thread.status?.type !== `active`) return;
++            await new Promise((resolve) => setTimeout(resolve, 100));
++          } while (Date.now() < deadline);
++          throw Error(`Source task did not become idle after interruption.`);
++        },
++        workspace: async (plan, operationId) => {
++          await assertAccount(plan);
++          if (plan.direction !== `to-worktree`) return {};
++          let workspace = {};
++          if (!plan.worktreeGitRoot) {
++            const created = await fetch.handlers[`worktree-create-managed`]({ hostId: plan.sourceHostId,
++              cwd: plan.cwd, startingState: { type: `branch`, branchName: plan.sourceBranch },
++              localEnvironmentConfigPath: null, streamId: operationId });
++            workspace = { worktreeGitRoot: created.worktreeGitRoot, destinationCwd: created.worktreeWorkspaceRoot,
++              stashTargetWorktree: false, createdWorktree: true };
++          }
++          return workspace;
++        },
++        move: async (plan, operationId) => {
++          await assertAccount(plan);
++          await assertInputReady(plan.sourceHostId, plan.sourceThreadId);
++          if (plan.direction === `to-host-worktree`) {
++            await requireCrossHostGate(plan.sourceHostId);
++            const moved = await git(plan.sourceHostId, `move-thread-to-host-worktree`, { operationId,
++              sourceCwd: plan.cwd, sourceBranch: plan.sourceBranch, sourceRolloutPath: plan.sourceRolloutPath,
++              destinationHostConfig: client(plan.destinationHostId).hostConfig, destinationWorkspaceRoot: plan.destinationWorkspaceRoot,
++              destinationWorktreeGitRoot: plan.destinationWorktreeGitRoot ?? null,
++              destinationWorktreeWorkspaceRoot: plan.destinationWorktreeWorkspaceRoot ?? null,
++              stashDestinationWorktree: plan.stashDestinationWorktree ?? false });
++            if (moved.status === `error`) throw Error(`Cross-host Git/artifact transfer failed: ${moved.message}`);
++            return { worktreeGitRoot: moved.worktreeGitRoot, destinationCwd: moved.worktreeWorkspaceRoot, rolloutPath: moved.rolloutPath, warnings: [...plan.warnings, ...(moved.warnings ?? [])] };
++          }
++          if (plan.direction === `to-worktree`) {
++            const branch = await fetch.handlers[`git-create-branch`]({ cwd: plan.destinationCwd, branch: plan.worktreeCheckoutBranch, hostId: plan.sourceHostId, mode: `worktree` });
++            if (branch.status === `error`) throw Error(`Worktree branch preparation failed: ${branch.error}; target workspace: ${plan.destinationCwd}`);
++          }
++          const moved = plan.direction === `to-local`
++            ? await git(plan.sourceHostId, `move-thread-to-local`, { operationId, sourceWorktreeCwd: plan.cwd,
++                sourceWorktreeRoot: plan.gitRoot, localGitRoot: plan.localGitRoot, sourceBranch: plan.sourceBranch })
++            : await git(plan.sourceHostId, `move-thread-to-worktree`, { operationId, localCwd: plan.cwd,
++                sourceBranch: plan.sourceBranch, defaultBranch: plan.defaultBranch, localCheckoutBranch: plan.localCheckoutBranch,
++                worktreeCheckoutBranch: plan.worktreeCheckoutBranch, worktreeGitRoot: plan.worktreeGitRoot,
++                worktreeWorkspaceRoot: plan.destinationCwd, stashTargetWorktree: plan.stashTargetWorktree, createdWorktree: plan.createdWorktree });
++          if (moved.status === `error`) throw Error(`Git handoff failed: ${moved.message ?? moved.error}; rollback: ${(moved.rollbackErrors ?? []).join(`, `)}`);
++          return { warnings: [...plan.warnings, ...(moved.warnings ?? [])] };
++        },
++        fork: async (plan, operationId) => {
++          await assertAccount(plan);
++          if (!globalThis.__codexThreadForks) throw Error(`Server fork authority is not initialized.`);
++          try {
++            return await globalThis.__codexThreadForks.forkTo(operationId, { sourceHostId: plan.sourceHostId,
++              sourceThreadId: plan.sourceThreadId, destinationHostId: plan.destinationHostId,
++              cwd: plan.destinationCwd, rolloutPath: plan.rolloutPath,
++              ...(plan.projectAssignment ? { projectAssignment: plan.projectAssignment } : {}),
++              workspaceRoots: plan.direction === `to-host-worktree` ? [plan.destinationCwd] : [plan.destinationCwd, ...plan.workspaceRoots.slice(1)] });
++          } catch (error) {
++            const receipt = globalThis.__codexThreadForks.resolve(operationId);
++            if (receipt?.threadId) error.destinationThreadId = receipt.threadId;
++            throw error;
++          }
++        },
++        synchronize: async (plan, threadId) => {
++          await assertAccount(plan);
++          await fetch.handlers[`worktree-set-owner-thread`]({ hostId: plan.destinationHostId, worktree: plan.worktreeGitRoot, conversationId: threadId });
++          if (plan.direction === `to-host-worktree`) {
++            await fetch.threadProjectAssignments.setAssignment({ threadId, assignment: plan.projectAssignment });
++            await connection(plan.destinationHostId).sendAppServerRequest(`thread/metadata/update`, { threadId, gitInfo: { branch: plan.sourceBranch } });
++            await git(plan.destinationHostId, `cleanup-host-handoff-transfer`, { rolloutPath: plan.rolloutPath });
++          }
++          await globalThis.__codexThreadInputGuard.transferHandoffState(plan.sourceHostId, plan.sourceThreadId, plan.destinationHostId, threadId);
++          const pinned = await fetch.getPinnedThreadIdsForWorktreeCleanup(plan.sourceHostId);
++          if (pinned.includes(plan.sourceThreadId)) {
++            await fetch.pinnedThreadsService.set({ hostId: plan.destinationHostId, threadId, pinned: true, beforeThreadId: plan.destinationHostId === plan.sourceHostId ? pinned[pinned.indexOf(plan.sourceThreadId) + 1] ?? null : null, useAppServerPins: true });
++            await fetch.pinnedThreadsService.set({ hostId: plan.sourceHostId, threadId: plan.sourceThreadId, pinned: false, useAppServerPins: true });
++          }
++        },
++        archive: async (plan) => {
++          await assertAccount(plan);
++          const conn = connection(plan.sourceHostId);
++          conn.registerArchiveThread(plan.sourceThreadId, { cwd: plan.cwd, cleanupWorktree: false });
++          try { await conn.sendAppServerRequest(`thread/archive`, { threadId: plan.sourceThreadId }); }
++          catch (error) { conn.archive.handleResponse(`thread/archive`, plan.sourceThreadId, false); throw error; }
++          conn.archive.handleResponse(`thread/archive`, plan.sourceThreadId, true);
++          conn.messageDelivery.broadcastToWindows({ type: `tasks-reload-requested` });
++        },
++        followUp: async (plan, threadId, prompt, operationId) => {
++          await assertAccount(plan);
++          const conn = connection(plan.destinationHostId);
++          const target = await conn.readThread(threadId, { includeTurns: false });
++          if (target.status?.type === `notLoaded`) await conn.resumeThread(threadId, { cwd: plan.destinationCwd, path: target.path });
++          const response = await conn.startTurn({ threadId, input: [{ type: `text`, text: prompt }], turnTrigger: `thread_handoff` });
++          if (!response?.turn?.id) throw Error(`Handoff follow-up was not confirmed.`);
++        },
++      });
++    }
+     let { downloadStore: M } = this.messageHandler.getBrowserHostManager();
+     (M.setChangeListener(() => {
+       this.broadcastDownloadsState();
