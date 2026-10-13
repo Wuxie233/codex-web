@@ -1,6 +1,6 @@
 --- a/.vite/build/main-C5K7o1Hr.js
 +++ b/.vite/build/main-C5K7o1Hr.js
-@@ -135146,6 +135146,317 @@
+@@ -135146,6 +135146,322 @@
        (e) => this.fetchHandler.getPinnedThreadIdsForWorktreeCleanup(e),
        e.onAppEntrySource,
      );
@@ -9,7 +9,7 @@
 +      const fetch = this.fetchHandler;
 +      const connection = (hostId) => this.appServerConnectionRegistry.getConnection(hostId);
 +      const client = (hostId) => fetch.getAppServerClientForHostIdOrThrow(hostId);
-+      const readyThread = async (hostId, threadId) => {
++      const readyThread = async (hostId, threadId, checkArchive = true) => {
 +        const host = connection(hostId);
 +        const read = () => host.readThread(threadId, { includeTurns: false });
 +        let thread = await read();
@@ -18,7 +18,7 @@
 +          throw Error(`The target is a subagent or cannot accept direct input`);
 +        // thread/read omits archive state; check its authoritative catalog before resume.
 +        let cursor = null;
-+        do {
++        while (checkArchive || thread.status?.type === `notLoaded`) {
 +          const page = await host.sendAppServerRequest(`thread/list`, {
 +            archived: true, cursor, limit: 100, sourceKinds: [], modelProviders: [],
 +          });
@@ -26,7 +26,8 @@
 +          if (page.data.some((entry) => entry.id === threadId))
 +            throw Error(`The target task is archived; unarchive it before continuing`);
 +          cursor = page.nextCursor ?? null;
-+        } while (cursor != null);
++          if (cursor == null) break;
++        }
 +        if (thread.status?.type === `notLoaded`) {
 +          // Leave model, permissions and instructions unset to retain persisted defaults.
 +          await host.resumeThread(threadId, { cwd: thread.cwd, path: thread.path });
@@ -256,7 +257,7 @@
 +          if (plan.title) await connection(plan.hostId).updateThreadTitle(threadId, plan.title, null);
 +        },
 +        setGoal: async (plan, threadId) => {
-+          const host = await readyThread(plan.hostId, threadId);
++          const host = await readyThread(plan.hostId, threadId, false);
 +          await host.sendAppServerRequest(`thread/goal/set`, { threadId,
 +            objective: plan.nativeParams.goal.objective, status: `active` });
 +        },
@@ -265,11 +266,15 @@
 +          return response.goal?.objective === plan.nativeParams.goal.objective;
 +        },
 +        injectItems: async (plan, threadId) => {
-+          const host = await readyThread(plan.hostId, threadId);
++          const host = await readyThread(plan.hostId, threadId, false);
 +          await host.sendAppServerRequest(`thread/inject_items`, { threadId, items: plan.nativeParams.responseItems });
 +        },
++        prepareTurn: async (plan, threadId) => {
++          // This coordinator owns the new thread; do not scan every archived task before its first turn.
++          await readyThread(plan.hostId, threadId, false);
++        },
 +        startTurn: async (plan, threadId) => {
-+          const host = await readyThread(plan.hostId, threadId);
++          const host = connection(plan.hostId);
 +          const response = await host.startTurn({ ...plan.turnParams, threadId, cwd: plan.cwd });
 +          return { turnId: response.turn.id };
 +        },

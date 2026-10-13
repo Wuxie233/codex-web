@@ -55,6 +55,8 @@ export type CreationAdapter = {
   bindThread(plan: CreationPlan, threadId: string, source: CreationSource): Promise<void>;
   injectItems?(plan: CreationPlan, threadId: string): Promise<void>;
   reconcileInjectedItems?(plan: CreationPlan, threadId: string): Promise<boolean>;
+  /** Readiness checks must finish before recording a possibly dispatched turn. */
+  prepareTurn?(plan: CreationPlan, threadId: string): Promise<void>;
   startTurn(plan: CreationPlan, threadId: string, operationId: string): Promise<{ turnId: string }>;
   setGoal?(plan: CreationPlan, threadId: string): Promise<void>;
   reconcileGoal?(plan: CreationPlan, threadId: string): Promise<boolean>;
@@ -392,6 +394,8 @@ export class ThreadCreations {
         this.save();
       }
       if (record.phase === "items-ready") {
+        await adapter.prepareTurn?.(plan, record.threadId!);
+        delete record.error;
         record.phase = "turn-pending";
         this.save();
         record.turnId = (await adapter.startTurn(plan, record.threadId!, record.operationId)).turnId;

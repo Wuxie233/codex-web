@@ -335,6 +335,10 @@ retain their source relation and queued completion notification. Human-created
 tasks have a client-scoped request ID and do not fabricate a source task. Human
 creation preserves configured custom models and leaves model validation to the
 daemon; the delegated-tool model catalog must not restrict native user input.
+First-turn readiness runs before persisting `turn-pending`; that phase means the
+turn RPC may have been dispatched. A loaded newly created task must not scan the
+entire archived-task catalog before its first turn. Unloaded tasks still verify
+archive state before resume, and ambiguous dispatched turns are never resent.
 
 `src/server/thread-coordinator.ts` exposes the same creation service to the Web
 IPC transport and a permission-restricted Unix socket at
