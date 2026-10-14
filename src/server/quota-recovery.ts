@@ -76,7 +76,10 @@ type AutoAttempt = {
   generation: number;
   quotaRevision: number;
   attempted: Set<string>;
+  dispatched: Set<string>;
   includeUnfinished: boolean;
+  watched: Map<string, string>;
+  retries: number;
 };
 export type Entry = {
   id: string;
@@ -170,6 +173,8 @@ export class QuotaRecovery {
   private accountUsage = new Map<string, UsageState>();
   private accountUpdates = new Map<string, AccountUpdate>();
   private accountGenerations = new Map<string, number>();
+  private accountAttempts = new Map<string, AutoAttempt>();
+  private accountTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private autoQueue = new Map<string, AutoAttempt>();
   private autoRunning: Promise<void> | undefined;
   private idleWaiters = new Set<() => void>();
@@ -240,11 +245,20 @@ export class QuotaRecovery {
   }
   registerHost(host: string, adapter: Adapter) {
     this.hosts.set(host, adapter);
-    if (this.autoResumeOn429) this.startRateScan(host);
+    if (this.autoResumeOn429 || this.autoResumeOnAccountSwitch)
+      this.startRateScan(host);
   }
   setAutoResume(value: unknown) {
+    const changed = value !== this.autoResumeOnAccountSwitch;
     this.setPreference(value);
+    if (changed) {
+      this.rateGeneration++;
+      this.cancelRateTimers();
+      this.scheduleRateEntries();
+      if (value) for (const host of this.hosts.keys()) this.startRateScan(host);
+    }
     if (!value) {
+      this.cancelAccountRecovery();
       this.autoQueue.clear();
       this.accountUpdates.clear();
       for (const [host, generation] of this.accountGenerations)
@@ -279,6 +293,7 @@ export class QuotaRecovery {
       this.autoResumeOn429 = value;
       this.rateGeneration++;
       this.cancelRateTimers();
+      this.scheduleRateEntries();
       if (value) for (const host of this.hosts.keys()) this.startRateScan(host);
     }
     return this.visibleSnapshot();
@@ -293,11 +308,23 @@ export class QuotaRecovery {
     this.disposed = true;
     this.rateGeneration++;
     this.cancelRateTimers();
+    this.cancelAccountRecovery();
+  }
+  private cancelAccountRecovery(host?: string) {
+    for (const [key, timer] of this.accountTimers) {
+      if (host !== undefined && key !== host) continue;
+      this.clock.clearTimeout(timer);
+      this.accountTimers.delete(key);
+    }
+    if (host === undefined) this.accountAttempts.clear();
+    else this.accountAttempts.delete(host);
   }
   private startRateScan(host: string) {
     const generation = this.rateGeneration;
     const allowed = () =>
-      this.autoResumeOn429 && generation === this.rateGeneration;
+      !this.disposed &&
+      (this.autoResumeOn429 || this.autoResumeOnAccountSwitch) &&
+      generation === this.rateGeneration;
     void (async () => {
       let cursor: string | null = null;
       const seen = new Set<string>();
@@ -329,11 +356,17 @@ export class QuotaRecovery {
       this.scanError = "部分任务暂时无法读取，请检查连接后刷新。";
     });
   }
+  private timedEnabled(reason: RecoveryReason | undefined) {
+    return reason === "modelAccess"
+      ? this.autoResumeOnAccountSwitch
+      : this.autoResumeOn429;
+  }
   private scheduleRateEntries() {
-    if (!this.autoResumeOn429 || this.disposed) return;
+    if (this.disposed) return;
     for (const entry of this.entries.values()) {
       if (
         !isTimedRecovery(entry.reason) ||
+        !this.timedEnabled(entry.reason) ||
         entry.status !== "pending" ||
         entry.retryAt === undefined ||
         this.rateTimers.has(entry.id) ||
@@ -367,7 +400,8 @@ export class QuotaRecovery {
   private rateAllowed(entry: Entry, generation: number, quotaRevision: number) {
     const chain = this.rateChains.get(this.key(entry.hostId, entry.threadId));
     return (
-      this.autoResumeOn429 &&
+      !this.disposed &&
+      this.timedEnabled(entry.reason) &&
       generation === this.rateGeneration &&
       quotaRevision === this.quotaRevision &&
       isTimedRecovery(entry.reason) &&
@@ -383,6 +417,7 @@ export class QuotaRecovery {
   // Token refreshes and initial connection are baselines, not account switches.
   accountChanged(host: string, principal: Principal) {
     if (!principal) {
+      this.cancelAccountRecovery(host);
       this.accountUpdates.delete(host);
       this.accountGenerations.set(
         host,
@@ -475,24 +510,35 @@ export class QuotaRecovery {
     });
     const generation = (this.accountGenerations.get(host) ?? 0) + 1;
     this.accountGenerations.set(host, generation);
+    this.cancelAccountRecovery(host);
     if (this.autoResumeOnAccountSwitch) {
-      this.autoQueue.set(host, {
+      const attempt: AutoAttempt = {
         host,
         generation,
         quotaRevision: this.quotaRevision,
         attempted: new Set(),
+        dispatched: new Set(),
         includeUnfinished,
-      });
-      this.autoRunning ??= Promise.resolve()
-        .then(() => this.drainAutoQueue())
-        .finally(() => {
-          this.autoRunning = undefined;
-        });
+        watched: new Map(),
+        retries: 0,
+      };
+      this.accountAttempts.set(host, attempt);
+      return this.enqueueAccountAttempt(attempt);
     }
+    return this.autoRunning ?? Promise.resolve();
+  }
+  private enqueueAccountAttempt(attempt: AutoAttempt) {
+    this.autoQueue.set(attempt.host, attempt);
+    this.autoRunning ??= Promise.resolve()
+      .then(() => this.drainAutoQueue())
+      .finally(() => {
+        this.autoRunning = undefined;
+      });
     return this.autoRunning ?? Promise.resolve();
   }
   private autoAllowed(attempt: AutoAttempt) {
     return (
+      !this.disposed &&
       this.autoResumeOnAccountSwitch &&
       this.accountGenerations.get(attempt.host) === attempt.generation &&
       this.quotaRevision === attempt.quotaRevision
@@ -537,6 +583,7 @@ export class QuotaRecovery {
               page.data,
               () => this.autoAllowed(attempt),
               attempt.includeUnfinished,
+              attempt,
             );
             complete = complete && discovered;
             await this.resolveEntries();
@@ -551,11 +598,47 @@ export class QuotaRecovery {
         } while (cursor);
         if (complete && this.autoAllowed(attempt) && attempt.includeUnfinished)
           this.interruptedConnections.delete(host);
+        if (!complete) this.retryAccountScan(attempt);
       } catch {
         console.info("[quota-recovery] account-recovery-scan-failed", { host });
         this.scanError = "部分任务暂时无法读取，请检查连接后刷新。";
+        this.retryAccountScan(attempt);
       }
     }
+  }
+  private retryAccountScan(attempt: AutoAttempt) {
+    if (
+      !this.autoAllowed(attempt) ||
+      attempt.retries >= 3 ||
+      this.accountTimers.has(attempt.host)
+    )
+      return;
+    const timer = this.clock.setTimeout(() => {
+      this.accountTimers.delete(attempt.host);
+      if (this.autoAllowed(attempt)) {
+        attempt.attempted = new Set(attempt.dispatched);
+        void this.enqueueAccountAttempt(attempt);
+      }
+    }, RATE_LIMIT_DELAYS[attempt.retries++]!);
+    timer.unref?.();
+    this.accountTimers.set(attempt.host, timer);
+  }
+  private followAccountFailure(host: string, thread: string, turn: string) {
+    const attempt = this.accountAttempts.get(host);
+    if (
+      !attempt ||
+      !this.autoAllowed(attempt) ||
+      attempt.watched.get(thread) !== turn
+    )
+      return;
+    attempt.watched.delete(thread);
+    void (async () => {
+      await this.waitUntilIdle();
+      if (!this.autoAllowed(attempt)) return;
+      await this.resume([JSON.stringify([host, thread, turn])], attempt);
+    })().catch(() => {
+      this.retryAccountScan(attempt);
+    });
   }
   private async resumeAutomatic(attempt: AutoAttempt) {
     await this.waitUntilIdle();
@@ -564,7 +647,8 @@ export class QuotaRecovery {
       .filter(
         (entry) =>
           entry.hostId === attempt.host &&
-          !isTimedRecovery(entry.reason) &&
+          (!isTimedRecovery(entry.reason) ||
+            (entry.reason === "modelAccess" && attempt.includeUnfinished)) &&
           (entry.reason !== "accountSwitch" || attempt.includeUnfinished) &&
           ["pending", "failed"].includes(entry.status),
       )
@@ -598,7 +682,14 @@ export class QuotaRecovery {
   ) {
     const id = JSON.stringify([host, thread, turn]);
     const previous = this.entries.get(id);
-    if (previous) {
+    if (
+      previous &&
+      previous.reason === "accountSwitch" &&
+      reason === "modelAccess" &&
+      ["pending", "failed"].includes(previous.status)
+    ) {
+      this.entries.delete(id);
+    } else if (previous) {
       if (
         reason === "quota" &&
         isTimedRecovery(previous.reason) &&
@@ -791,6 +882,8 @@ export class QuotaRecovery {
       this.persistSettings();
     }
     this.add(host, p.threadId, turnId, p.threadId, this.clock.now(), reason);
+    if (reason === "accountSwitch" || reason === "modelAccess")
+      this.followAccountFailure(host, p.threadId, turnId);
   }
   snapshot() {
     return {
@@ -851,7 +944,8 @@ export class QuotaRecovery {
   private async resolveEntries() {
     const aliases = new Map<string, string>();
     for (const entry of [...this.entries.values()]) {
-      if (entry.resolved || ["resumed", "skipped"].includes(entry.status)) continue;
+      if (entry.resolved || ["resumed", "skipped"].includes(entry.status))
+        continue;
       const adapter = this.hosts.get(entry.hostId);
       if (!adapter) continue;
       let thread = await bounded(adapter.readThread(entry.threadId)).catch(
@@ -1020,6 +1114,7 @@ export class QuotaRecovery {
     items: Thread[],
     proceed: () => boolean,
     includeUnfinished = false,
+    accountAttempt?: AutoAttempt,
   ) {
     const candidates = [...items];
     let complete = true;
@@ -1031,6 +1126,15 @@ export class QuotaRecovery {
             const thread = await bounded(adapter.readThread(item.id), 5000);
             if (thread) this.reconcileRateChain(host, thread);
             const last = thread?.turns?.at(-1);
+            if (
+              accountAttempt?.includeUnfinished &&
+              thread &&
+              last &&
+              last.status === "inProgress" &&
+              !this.isChild(thread) &&
+              proceed()
+            )
+              accountAttempt.watched.set(thread.id, last.id);
             const reason =
               recoveryReason(last?.error) ??
               (includeUnfinished &&
@@ -1143,7 +1247,7 @@ export class QuotaRecovery {
         if (!entry || !["pending", "failed"].includes(entry.status)) continue;
         if (
           automatic &&
-          (isTimedRecovery(entry.reason) ||
+          ((isTimedRecovery(entry.reason) && entry.reason !== "modelAccess") ||
             (entry.reason === "accountSwitch" && !automatic.includeUnfinished))
         )
           continue;
@@ -1237,15 +1341,17 @@ export class QuotaRecovery {
                   {
                     type: "text",
                     text:
-                      entry.reason === "accountSwitch"
-                        ? ACCOUNT_SWITCH_CONTINUATION
-                        : entry.reason === "authRefresh"
-                          ? AUTH_REFRESH_CONTINUATION
-                          : isTimedRecovery(entry.reason)
-                            ? entry.reason === "routingTimeout"
-                              ? ROUTING_TIMEOUT_CONTINUATION
-                              : RATE_LIMIT_CONTINUATION
-                            : CONTINUATION,
+                      entry.reason === "modelAccess"
+                        ? "上一轮因账号暂时无法使用所选模型而中断。请核对当前进度和已有执行结果，再继续未完成的工作，避免重复执行已完成的操作。"
+                        : entry.reason === "accountSwitch"
+                          ? ACCOUNT_SWITCH_CONTINUATION
+                          : entry.reason === "authRefresh"
+                            ? AUTH_REFRESH_CONTINUATION
+                            : isTimedRecovery(entry.reason)
+                              ? entry.reason === "routingTimeout"
+                                ? ROUTING_TIMEOUT_CONTINUATION
+                                : RATE_LIMIT_CONTINUATION
+                              : CONTINUATION,
                     text_elements: [],
                   },
                 ],
@@ -1270,7 +1376,7 @@ export class QuotaRecovery {
                   )
                 ) {
                   cancelledByRatePreference =
-                    !this.autoResumeOn429 ||
+                    !this.timedEnabled(entry.reason) ||
                     rateAttempt.generation !== this.rateGeneration;
                   throw Error("自动继续设置已变化");
                 }
@@ -1301,6 +1407,7 @@ export class QuotaRecovery {
                 entry.clientUserMessageId = messageId;
                 delete entry.detail;
                 this.save(); // Persist before dispatch. A crash or timeout must never cause an automatic replay.
+                automatic?.dispatched.add(threadKey);
                 dispatched = true;
               },
             ),
@@ -1348,6 +1455,7 @@ export class QuotaRecovery {
             ? "发送结果不明，刷新列表核对；不会自动重发"
             : `未发送：${stage}失败，请刷新后重试`;
           this.save();
+          if (automatic && !dispatched) this.retryAccountScan(automatic);
           if (dispatched) break;
         } finally {
           this.rateInFlight.delete(key);

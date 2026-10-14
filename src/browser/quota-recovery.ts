@@ -7,7 +7,13 @@ type RecoveryEntry = {
   interruptedAt: number | string;
   status: "pending" | "sending" | "resumed" | "skipped" | "failed" | "unknown";
   detail?: string;
-  reason?: "quota" | "rateLimit" | "accountSwitch" | "routingTimeout" | "authRefresh";
+  reason?:
+    | "modelAccess"
+    | "quota"
+    | "rateLimit"
+    | "accountSwitch"
+    | "routingTimeout"
+    | "authRefresh";
   retryAt?: number;
   autoRetryCount?: number;
 };
@@ -31,7 +37,7 @@ const settings: {
     channel: "quota-recovery:set-auto-resume",
     label: "换号后自动继续中断任务",
     description:
-      "换号后自动继续中断任务；原账号重新登录后，额度恢复或登录凭据失效已解除时也会自动继续。",
+      "换号后自动继续中断任务；原账号重新登录后，额度恢复或登录凭据失效已解除时也会自动继续。模型暂不可用时会等待后自动重试，最多 3 次。",
   },
   {
     key: "autoResumeOn429",
@@ -199,16 +205,27 @@ export function installQuotaRecovery(invoke: Invoke): void {
         meta.className = "quota-recovery-meta";
         const date = new Date(entry.interruptedAt);
         meta.textContent = `${Number.isNaN(date.getTime()) ? "中断时间未知" : date.toLocaleString()} · ${statusLabels[entry.status] || entry.status}`;
-        if (entry.reason === "authRefresh") meta.textContent += " · 登录凭据失效";
+        if (entry.reason === "authRefresh")
+          meta.textContent += " · 登录凭据失效";
         if (entry.reason === "accountSwitch") meta.textContent += " · 换号中断";
-        if (entry.reason === "rateLimit" || entry.reason === "routingTimeout") {
+        if (
+          entry.reason === "rateLimit" ||
+          entry.reason === "routingTimeout" ||
+          entry.reason === "modelAccess"
+        ) {
           meta.textContent +=
-            entry.reason === "routingTimeout" ? " · 路由发现超时" : " · 429 限流";
+            entry.reason === "modelAccess"
+              ? " · 模型暂不可用"
+              : entry.reason === "routingTimeout"
+                ? " · 路由发现超时"
+                : " · 429 限流";
           if (typeof entry.autoRetryCount === "number") {
             meta.textContent += ` · 已自动尝试 ${entry.autoRetryCount}/3 次`;
           }
           if (
-            snapshot.autoResumeOn429 &&
+            (entry.reason === "modelAccess"
+              ? snapshot.autoResumeOnAccountSwitch
+              : snapshot.autoResumeOn429) &&
             entry.status === "pending" &&
             entry.retryAt !== undefined
           ) {

@@ -8,11 +8,14 @@ const {
   CONTINUATION,
 } = require("../src/server/quota-recovery.js");
 const quota = { codexErrorInfo: "usageLimitExceeded" };
-function fixture(t) {
+function fixture(t, clock) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-quota-"));
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  t.after(() => {
+    recovery.dispose();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
   const file = path.join(dir, "entries.json");
-  const recovery = new QuotaRecovery(file),
+  const recovery = new QuotaRecovery(file, clock),
     threads = new Map(),
     sent = [],
     resumed = [];
@@ -488,7 +491,8 @@ test("automatic history discovery continues past page 100 without relying on a m
   f.recovery.setAutoResume(true);
   await f.recovery.accountChanged("local", principal("a"));
   await f.recovery.accountChanged("local", principal("b"));
-  assert.deepEqual(cursors, [null, "page-2"]);
+  // Enabling discovers delayed model failures; the identity change scans again.
+  assert.deepEqual(cursors, [null, "page-2", null, "page-2"]);
   assert.deepEqual(f.resumed, ["unopened"]);
   assert.deepEqual(
     f.sent.map((x) => x.threadId),
@@ -815,4 +819,193 @@ test("same-account quota recovery leaves 429 entries and retry budgets untouched
     .entries.find((e) => e.threadId === "limited");
   for (const field of ["status", "reason", "autoRetryCount", "retryAt"])
     assert.equal(after[field], before[field]);
+});
+
+const modelAccess = {
+  message:
+    "The 'gpt-6-astra' model is not supported when using Codex with a ChatGPT account.",
+};
+async function settleRecovery() {
+  for (let i = 0; i < 30; i++) await new Promise(setImmediate);
+}
+function finishModelFailure(f, id = "late", turnId = "running") {
+  const thread = f.threads.get(id);
+  thread.status = { type: "idle" };
+  const turn = { id: turnId, status: "failed", error: modelAccess, items: [] };
+  thread.turns = [turn];
+  f.recovery.observe("local", {
+    method: "turn/completed",
+    params: { threadId: id, turn },
+  });
+}
+test("account recovery follows the same active turn when failure arrives after scanning", async (t) => {
+  fastRecovery(t);
+  const f = fixture(t);
+  f.threads.set("late", {
+    id: "late",
+    status: { type: "active" },
+    turns: [{ id: "running", status: "inProgress", items: [] }],
+  });
+  f.recovery.setAutoResume(true);
+  await f.recovery.accountChanged("local", principal("a"));
+  await f.recovery.accountChanged("local", principal("b"));
+  assert.equal(f.sent.length, 0);
+  finishModelFailure(f);
+  await settleRecovery();
+  assert.equal(f.sent.length, 1);
+  finishModelFailure(f, "late", "continued-failed");
+  await settleRecovery();
+  assert.equal(f.sent.length, 1, "one dispatch per thread per account change");
+});
+test("account recovery retries a transient history read failure without another login", async (t) => {
+  fastRecovery(t);
+  const timers = new Set();
+  const clock = {
+    now: Date.now,
+    setTimeout(callback) {
+      const timer = { callback, unref() {} };
+      timers.add(timer);
+      return timer;
+    },
+    clearTimeout(timer) {
+      timers.delete(timer);
+    },
+  };
+  const f = fixture(t, clock);
+  t.after(() => f.recovery.dispose());
+  f.threads.set("late", {
+    id: "late",
+    status: { type: "idle" },
+    turns: [{ id: "running", status: "failed", error: modelAccess, items: [] }],
+  });
+  const read = f.adapter.readThread;
+  let fail = true;
+  f.adapter.readThread = async (...args) => {
+    if (fail) throw Error("connection settling");
+    return read(...args);
+  };
+  f.recovery.setAutoResume(true);
+  await f.recovery.accountChanged("local", principal("a"));
+  await f.recovery.accountChanged("local", principal("b"));
+  assert.equal(f.sent.length, 0);
+  assert.equal(timers.size, 1, "incomplete scan must schedule retry");
+  fail = false;
+  for (const timer of [...timers]) {
+    timers.delete(timer);
+    timer.callback();
+  }
+  await settleRecovery();
+  assert.equal(f.sent.length, 1);
+});
+
+test("late account failures do not revive a newer turn or a cancelled recovery", async (t) => {
+  fastRecovery(t);
+  for (const action of [
+    "new-turn",
+    "disable",
+    "invalidate",
+    "dispose",
+    "baseline",
+  ]) {
+    const f = fixture(t);
+    f.threads.set("late", {
+      id: "late",
+      status: { type: "active" },
+      turns: [{ id: "running", status: "inProgress", items: [] }],
+    });
+    f.recovery.setAutoResume(true);
+    await f.recovery.accountChanged("local", principal("a"));
+    if (action !== "baseline")
+      await f.recovery.accountChanged("local", principal("b"));
+    if (action === "disable") f.recovery.setAutoResume(false);
+    if (action === "invalidate") await f.recovery.accountChanged("local", null);
+    if (action === "dispose") f.recovery.dispose();
+    finishModelFailure(f, "late", action === "new-turn" ? "newer" : "running");
+    await settleRecovery();
+    assert.equal(f.sent.length, 0, action);
+  }
+});
+
+test("account scan retries pre-send reads but never ambiguous dispatch", async (t) => {
+  fastRecovery(t);
+  for (const ambiguous of [false, true]) {
+    const timers = new Set();
+    const clock = {
+      now: Date.now,
+      setTimeout(callback) {
+        const timer = { callback, unref() {} };
+        timers.add(timer);
+        return timer;
+      },
+      clearTimeout(timer) {
+        timers.delete(timer);
+      },
+    };
+    const f = fixture(t, clock);
+    t.after(() => f.recovery.dispose());
+    f.fail();
+    const list = f.adapter.listThreads;
+    let failures = 1;
+    f.adapter.listThreads = async (params) => {
+      if (params.archived && failures-- > 0)
+        throw Error("transient archive read");
+      return list(params);
+    };
+    if (ambiguous)
+      f.adapter.startTurn = async (params, beforeSend) => {
+        beforeSend();
+        f.sent.push(params);
+        throw Error("unknown delivery");
+      };
+    f.recovery.setAutoResume(true);
+    await f.recovery.accountChanged("local", principal("a"));
+    await f.recovery.accountChanged("local", principal("b"));
+    for (const timer of [...timers]) {
+      timers.delete(timer);
+      timer.callback();
+    }
+    await settleRecovery();
+    assert.equal(f.sent.length, 1);
+    assert.equal(
+      f.recovery.snapshot().entries[0].status,
+      ambiguous ? "unknown" : "resumed",
+    );
+  }
+});
+
+test("account scan retry backoff is bounded and disabling cancels timers", async (t) => {
+  const timers = new Set(),
+    delays = [];
+  const clock = {
+    now: Date.now,
+    setTimeout(callback, delay) {
+      delays.push(delay);
+      const timer = { callback, unref() {} };
+      timers.add(timer);
+      return timer;
+    },
+    clearTimeout(timer) {
+      timers.delete(timer);
+    },
+  };
+  const f = fixture(t, clock);
+  f.adapter.listThreads = async () => {
+    throw Error("offline");
+  };
+  f.recovery.setAutoResume(true);
+  await f.recovery.accountChanged("local", principal("a"));
+  await f.recovery.accountChanged("local", principal("b"));
+  for (let i = 0; i < 3; i++) {
+    for (const timer of [...timers]) {
+      timers.delete(timer);
+      timer.callback();
+    }
+    await settleRecovery();
+  }
+  assert.deepEqual(delays, [30000, 60000, 120000]);
+  assert.equal(timers.size, 0);
+  await f.recovery.accountChanged("local", principal("c"));
+  assert.equal(timers.size, 1);
+  f.recovery.setAutoResume(false);
+  assert.equal(timers.size, 0);
 });

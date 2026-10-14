@@ -609,3 +609,85 @@ test("a child timer remapped during dispatch cannot bypass the root 120-second d
   await f.advance(90000);
   assert.equal(f.sent.length, 3);
 });
+
+test("model access failure automatically retries without another account event", async (t) => {
+  const f = fixture(t);
+  f.recovery.setAutoResume(true);
+  await flush();
+  const error = {
+    message:
+      "The 'gpt-6-astra' model is not supported when using Codex with a ChatGPT account.",
+  };
+  f.fail("one", "initial", error);
+  await f.advance(30000);
+  assert.equal(f.sent.length, 1);
+  assert.equal(f.sent[0].model, undefined, "preserve selected model");
+  f.fail("one", "auto-1", error);
+  await f.advance(60000);
+  assert.equal(f.sent.length, 2);
+  f.fail("one", "auto-2", error);
+  f.reload();
+  await flush();
+  await f.advance(120000);
+  assert.equal(f.sent.length, 3);
+  f.fail("one", "auto-3", error);
+  await f.advance(1000000);
+  assert.equal(f.sent.length, 3);
+});
+
+test("model access retries use only the account preference and cancel on disable", async (t) => {
+  const f = fixture(t);
+  f.recovery.setAutoResume429(true);
+  await flush();
+  f.fail("one", "initial", {
+    message:
+      "The 'gpt-6-astra' model is not supported when using Codex with a ChatGPT account.",
+  });
+  await f.advance(30000);
+  assert.equal(f.sent.length, 0);
+  f.recovery.setAutoResume(true);
+  await flush();
+  f.recovery.setAutoResume(false);
+  await f.advance(1000000);
+  assert.equal(f.sent.length, 0);
+});
+
+test("legacy pending model failure is migrated from authoritative history", async (t) => {
+  const f = fixture(t);
+  f.fail("one", "initial", {
+    message:
+      "The 'gpt-6-astra' model is not supported when using Codex with a ChatGPT account.",
+  });
+  const entries = JSON.parse(fs.readFileSync(f.file, "utf8"));
+  entries[0].reason = "accountSwitch";
+  delete entries[0].retryAt;
+  delete entries[0].autoRetryCount;
+  fs.writeFileSync(f.file, JSON.stringify(entries));
+  f.reload();
+  f.recovery.setAutoResume(true);
+  await flush();
+  assert.equal(f.recovery.snapshot().entries[0].reason, "modelAccess");
+  await f.advance(30000);
+  assert.equal(f.sent.length, 1);
+});
+
+test("uncertain model continuation is never replayed after restart", async (t) => {
+  const f = fixture(t);
+  f.recovery.setAutoResume(true);
+  await flush();
+  f.adapter.startTurn = async (params, beforeSend) => {
+    beforeSend();
+    f.sent.push(params);
+    throw Error("transport outcome unknown");
+  };
+  f.fail("one", "initial", {
+    message:
+      "The 'gpt-6-astra' model is not supported when using Codex with a ChatGPT account.",
+  });
+  await f.advance(30000);
+  assert.equal(f.recovery.snapshot().entries[0].status, "unknown");
+  f.reload();
+  await flush();
+  await f.advance(1000000);
+  assert.equal(f.sent.length, 1);
+});

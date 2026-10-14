@@ -106,12 +106,18 @@ someone with access to the web ui may be able to:
 
 Account-switch continuation runs on the server when its setting is enabled.
 The explicit "model is not supported when using Codex with a ChatGPT account"
-failure is also eligible after an identity change or authenticated backend
-reconnection. It keeps the selected model and does not trigger timed retries,
-initial-login retries, or retries on ordinary quota updates. The latest turn must
-still be the same failed turn in an idle, unloaded, or system-error root thread.
-Each account recovery attempt sends at most once per thread, including when the
-continuation immediately fails with the same model-access error.
+failure retries automatically under that setting, even when no account-change
+notification reaches Web. It keeps the selected model and waits 30, 60, then 120
+seconds, sharing the durable three-retry budget with rate-limit and routing-timeout
+failures. Disabling the account setting cancels these model retries independently
+of the rate-limit setting. Unknown sends are reconciled, never replayed. Legacy
+pending model failures are reclassified only after reading the actual failed turn.
+The latest turn must still be the same failed turn in an idle, unloaded, or
+system-error root thread. Each account recovery attempt dispatches at most once
+per thread. It remembers active turns encountered during the switch scan so their
+late account-related failures can resume without another switch. Incomplete scans
+and pre-dispatch read failures retry after 30, 60, and 120 seconds; dispatched or
+uncertain continuations are excluded from those retries.
 Besides quota failures, an authenticated identity change or a backend reconnection
 followed by a valid login can recover an abandoned
 local root turn with no error or final answer. The backend must report the thread

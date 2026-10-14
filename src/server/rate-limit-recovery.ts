@@ -4,14 +4,19 @@ export const RATE_LIMIT_DELAYS = [30000, 60000, 120000] as const;
 export const ROUTING_TIMEOUT_CONTINUATION =
   "上一轮因工作区路由发现超时而中断，请继续之前未完成的工作。先核对当前进度和已有执行结果，再从中断处接着处理，避免重复执行已完成的操作。";
 export type RecoveryReason =
+  | "modelAccess"
   | "quota"
   | "rateLimit"
   | "accountSwitch"
   | "routingTimeout"
   | "authRefresh";
-// Both transient failures share the existing retry preference and per-thread budget.
+// Delayed failures share a per-thread budget; the owner selects the preference.
 export function isTimedRecovery(reason: RecoveryReason | undefined): boolean {
-  return reason === "rateLimit" || reason === "routingTimeout";
+  return (
+    reason === "rateLimit" ||
+    reason === "routingTimeout" ||
+    reason === "modelAccess"
+  );
 }
 // Walk structured protocol errors and their textual HTTP diagnostics. Quota wins
 // even when an upstream provider also labels the response HTTP 429.
@@ -44,7 +49,9 @@ export function recoveryReason(error: unknown): RecoveryReason | undefined {
     return "quota";
   if (
     strings.some((s) =>
-      /Your access token could not be refreshed|\brefresh_token_(?:expired|reused|invalidated)\b/.test(s),
+      /Your access token could not be refreshed|\brefresh_token_(?:expired|reused|invalidated)\b/.test(
+        s,
+      ),
     )
   )
     return "authRefresh";
@@ -57,14 +64,18 @@ export function recoveryReason(error: unknown): RecoveryReason | undefined {
   if (strings.some((s) => s.includes("workspace routing discovery timed out")))
     return "routingTimeout";
   if (info !== undefined && info !== null && info !== "other") return undefined;
-  // Model access and workspace routing auth can change after login. Wait for an account
-  // switch/reconnect; this is not a transient 429 and must not use timed retries.
+  // A routing credential can change without an account notification reaching Web.
   if (
-    strings.some(
-      (s) =>
-        /The '[^'\r\n]+' model is not supported when using Codex with a ChatGPT account\./.test(
-          s,
-        ) || s.includes("workspace routing discovery unauthorized (401)"),
+    strings.some((s) =>
+      /The '[^'\r\n]+' model is not supported when using Codex with a ChatGPT account\./.test(
+        s,
+      ),
+    )
+  )
+    return "modelAccess";
+  if (
+    strings.some((s) =>
+      s.includes("workspace routing discovery unauthorized (401)"),
     )
   )
     return "accountSwitch";
