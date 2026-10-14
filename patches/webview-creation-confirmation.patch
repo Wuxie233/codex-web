@@ -1,0 +1,35 @@
+--- a/webview/assets/app-primary-6b28e06666ff.js
++++ b/webview/assets/app-primary-6b28e06666ff.js
+@@ -405659,12 +405659,20 @@
+   window.addEventListener(`pagehide`, detach, { once: true });
+   const poll = async () => {
+     while (receipt?.status === `queued`) {
+-      if (detached || window.location.pathname !== observedPath) return unknown();
++      if (detached || window.location.pathname !== observedPath) {
++        // Recovery may already have opened the real task. Read once without replaying.
++        try { receipt = await read() ?? receipt; } catch {}
++        return { ...result(receipt), accepted: true };
++      }
+       await new Promise((resolve) => setTimeout(resolve, 1000));
+-      if (detached || window.location.pathname !== observedPath) return unknown();
++      if (detached || window.location.pathname !== observedPath) {
++        // Recovery may already have opened the real task. Read once without replaying.
++        try { receipt = await read() ?? receipt; } catch {}
++        return { ...result(receipt), accepted: true };
++      }
+       try { receipt = await read() ?? receipt; } catch { /* Only retry receipt reads. */ }
+     }
+-    if (detached || window.location.pathname !== observedPath) return unknown();
++    if (detached || window.location.pathname !== observedPath) return result(receipt);
+     if (receipt?.threadId != null && receipt?.turnId != null) {
+       try {
+       try { receipt = await read(true) ?? receipt; } catch { /* Presentation can use this accepted command's original UI context. */ }
+@@ -405677,7 +405685,7 @@
+       await window.codexWebApplyCreationMetadata?.(hostId, receipt.threadId);
+       } catch (error) { ql.warning(`Task created; metadata presentation failed`, { safe: {}, sensitive: { error } }); }
+     }
+-    if (detached || window.location.pathname !== observedPath) return unknown();
++    if (detached || window.location.pathname !== observedPath) return result(receipt);
+     const settled = result(receipt);
+     try { await onSettled?.(settled); } catch (error) { ql.warning(`Task settled; presentation failed`, { safe: {}, sensitive: { error } }); }
+     return settled;
