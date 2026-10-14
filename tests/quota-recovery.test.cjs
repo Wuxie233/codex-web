@@ -1009,22 +1009,3 @@ test("account scan retry backoff is bounded and disabling cancels timers", async
   f.recovery.setAutoResume(false);
   assert.equal(timers.size, 0);
 });
-
-test('causal recovery receipt excludes unrelated latest turns and survives restart', async t => {
-  const { file } = fixture(t);
-  // Seed a persisted old-version receipt: continuation is found by message identity.
-  const entry = { id: 'receipt', hostId: 'local', threadId: 'thread', turnId: 'root',
-    title: 'test', interruptedAt: 1, status: 'unknown', clientUserMessageId: 'message' };
-  const receiptFile = file;
-  fs.writeFileSync(receiptFile, JSON.stringify([entry]));
-  const other = new QuotaRecovery(receiptFile);
-  t.after(() => other.dispose());
-  other.registerHost('local', { readThread: async () => ({ id: 'thread', turns: [
-    { id: 'continued', status: 'completed', items: [{type:'userMessage',clientId:'message'}] },
-    { id: 'human', status: 'completed', items: [{type:'userMessage',clientId:'different'}] }
-  ] }) });
-  const receipt = await other.readTask('local','thread','root');
-  assert.equal(receipt.status, 'continued');
-  assert.equal(receipt.continuationTurnId, 'continued');
-  assert.equal((await other.readTask('local','thread','unrelated')).status, 'unmanaged');
-});

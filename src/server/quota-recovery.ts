@@ -91,7 +91,6 @@ export type Entry = {
   status: Status;
   detail?: string;
   clientUserMessageId?: string;
-  continuationTurnId?: string;
   sourceThreadId?: string;
   sourceTurnId?: string;
   resolved?: boolean;
@@ -886,43 +885,6 @@ export class QuotaRecovery {
     if (reason === "accountSwitch" || reason === "modelAccess")
       this.followAccountFailure(host, p.threadId, turnId);
   }
-  /** Read-only causal receipt. Never infer ownership from the latest turn. */
-  async readTask(hostId: string, threadId: string, turnId: string) {
-    const entry = [...this.entries.values()].find(e =>
-      e.hostId === hostId && e.threadId === threadId && e.turnId === turnId);
-    if (!entry) return { status: "unmanaged", enabled: false, turnId };
-    const enabled = isTimedRecovery(entry.reason)
-      ? this.timedEnabled(entry.reason) : this.autoResumeOnAccountSwitch;
-    let continuationTurnId = entry.continuationTurnId;
-    if (!continuationTurnId && entry.clientUserMessageId) {
-      const adapter = this.hosts.get(hostId);
-      if (!adapter) throw Error("Recovery host is unavailable");
-      const thread = await bounded(adapter.readThread(threadId));
-      if (!thread) throw Error("Recovery thread is unavailable");
-      const matches = thread.turns?.filter(t => t.items?.some(i =>
-        i.type === "userMessage" && [i.id, i.clientId, i.clientUserMessageId]
-          .includes(entry.clientUserMessageId))) ?? [];
-      if (matches.length === 1) {
-        continuationTurnId = matches[0]!.id;
-        entry.continuationTurnId = continuationTurnId;
-        if (entry.status === "unknown") entry.status = "resumed";
-        this.save();
-      }
-    }
-    const blockedReason = continuationTurnId ? undefined
-      : entry.status === "unknown" ? "outcome-unknown"
-      : entry.status === "sending" ? undefined
-      : !enabled ? "disabled"
-      : entry.status !== "pending" ? entry.status
-      : isTimedRecovery(entry.reason) && !entry.retryAt ? "retry-exhausted"
-      : undefined;
-    return {
-      status: continuationTurnId ? "continued" : blockedReason ? "blocked" : "waiting",
-      enabled, turnId, continuationTurnId,
-      clientUserMessageId: entry.clientUserMessageId,
-      reason: entry.reason, retryAt: entry.retryAt, blockedReason,
-    };
-  }
   snapshot() {
     return {
       entries: [...this.entries.values()]
@@ -1458,7 +1420,6 @@ export class QuotaRecovery {
               this.persistSettings();
             }
           }
-          entry.continuationTurnId = result.turn.id;
           entry.status = "resumed";
           entry.detail = "已开始继续";
           this.save();

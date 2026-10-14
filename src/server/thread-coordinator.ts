@@ -7,7 +7,6 @@ import type { ThreadHandoffs } from "./thread-handoff.js";
 import type { ThreadManagementService } from "./thread-management.js";
 
 export type ThreadCoordinatorOptions = {
-  recovery?: Pick<import("./quota-recovery.js").QuotaRecovery, "readTask">;
   forks?: ThreadForks;
   handoffs?: ThreadHandoffs;
   management?: ThreadManagementService;
@@ -32,11 +31,11 @@ export class ThreadCoordinator {
     if (clientIdentity !== "codex-web" && clientIdentity !== "codecarry")
       throw new CoordinatorError(-32600, "Unsupported coordinator client identity.");
     if (request.method === "codexWeb/capabilities") return {
-      protocolVersion: 1, threadCreation: true, recoveryRead: !!this.options.recovery,
+      protocolVersion: 1, threadCreation: true,
       threadFork: !!this.options.forks, threadHandoff: !!this.options.handoffs,
       threadArchive: !!this.options.management,
     };
-    const methods = ["codexWeb/recovery/read", "codexWeb/thread/create", "codexWeb/thread/creation/read",
+    const methods = ["codexWeb/thread/create", "codexWeb/thread/creation/read",
       "codexWeb/thread/fork", "codexWeb/thread/fork/read",
       "codexWeb/thread/handoff", "codexWeb/thread/handoff/read",
       "codexWeb/thread/archive", "codexWeb/thread/archive/read"];
@@ -44,13 +43,6 @@ export class ThreadCoordinator {
     const params = request.params;
     if (!params || typeof params !== "object" || Array.isArray(params) || typeof params.hostId !== "string" || !params.hostId.trim())
       throw new CoordinatorError(-32602, "Coordinator requires a nonempty hostId.");
-    if (request.method === "codexWeb/recovery/read") {
-      if (!this.options.recovery) throw new CoordinatorError(-32601, "Recovery is unavailable.");
-      if (typeof params.threadId !== "string" || !params.threadId.trim() ||
-          typeof params.turnId !== "string" || !params.turnId.trim())
-        throw new CoordinatorError(-32602, "Recovery requires threadId and turnId.");
-      return this.options.recovery.readTask(params.hostId, params.threadId, params.turnId);
-    }
     if (request.method === "codexWeb/thread/create") {
       // createUser owns validation, durable enqueue and subsequent recovery. A
       // disconnected client can read this requestId without resending a command.

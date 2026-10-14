@@ -758,7 +758,7 @@ async function startIpcBridgeServer(options: ServerOptions): Promise<void> {
   const management = new ThreadManagementService(path.join(
     process.env.CODEX_HOME || path.join(os.homedir(), ".codex"), "codex-web-management-receipts.json",
   ));
-  const coordinator = new ThreadCoordinator(creations, { forks, handoffs, management, recovery });
+  const coordinator = new ThreadCoordinator(creations, { forks, handoffs, management });
   const inputState = new ThreadInputState();
   const followUpQueue = new ThreadFollowUpQueue(path.join(
     process.env.CODEX_HOME || path.join(os.homedir(), ".codex"),
