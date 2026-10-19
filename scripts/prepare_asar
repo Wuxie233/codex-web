@@ -112,3 +112,5 @@ patch --batch --forward --strip 1 --directory scratch/asar < patches/webview-ser
 
 patch --batch --forward --strip 1 --directory scratch/asar < patches/webview-creation-confirmation.patch
 patch --batch --forward --strip 1 --directory scratch/asar < patches/main-creation-title.patch
+
+patch --batch --forward --strip 1 --directory scratch/asar < patches/main-creation-project-id.patch

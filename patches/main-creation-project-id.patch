@@ -1,0 +1,38 @@
+--- a/.vite/build/main-C5K7o1Hr.js
++++ b/.vite/build/main-C5K7o1Hr.js
+@@ -135118,6 +135118,16 @@
+             await host.updateThreadTitle(threadId, title, generated.description ?? null);
+         } catch { console.warn(`[codex-web] Task title generation failed; keeping the prompt title`); }
+       }
++      // Native clients address the shared app-server project catalog, while the Desktop
++      // legacy cache stays this host's projection. Resolve either identity to one entry.
++      function codexWebMatchProject(entries, projectId, legacyProjectIdFor) {
++        const direct = entries.find((entry) => entry.projectId === projectId);
++        if (direct != null) return direct;
++        let legacyId = null;
++        try { legacyId = legacyProjectIdFor(projectId); } catch { legacyId = null; }
++        if (legacyId == null || legacyId === projectId) return null;
++        return entries.find((entry) => entry.projectId === legacyId) ?? null;
++      }
+       globalThis.__codexThreadCreations.registerAdapter({
+         prepare: async (args, source, operationId) => {
+           const isUser = source.kind === `user`;
+@@ -135143,8 +135153,17 @@
+           const explicit = (key) => Object.prototype.hasOwnProperty.call(args, key);
+           if (![ `project`, `projectless`, ...(isUser ? [`cwd`] : []) ].includes(args.target.type))
+             throw Error(`Server creation supports local and remote Codex projects and projectless tasks; ChatGPT Work cloud creation is unavailable here.`);
++          const legacyProjectIdFor = (projectId) => {
++            const backend = this.projectsManager.projectBackend;
++            const mapped = backend?.legacyProjectIdsByServerId?.get(projectId);
++            if (mapped != null) return mapped;
++            const identity = backend?.migrationIdentity;
++            const byHost = n.Ai(fetch.globalState.get(n.Sc.APP_SERVER_PROJECT_ID_BY_LEGACY_PROJECT_ID_BY_HOST)) ?? {};
++            const mapping = identity == null ? {} : byHost[identity] ?? {};
++            return Object.keys(mapping).find((legacyId) => mapping[legacyId] === projectId) ?? null;
++          };
+           const project = args.target.type === `project`
+-            ? projects().find((entry) => entry.projectId === args.target.projectId) : null;
++            ? codexWebMatchProject(projects(), args.target.projectId, legacyProjectIdFor) : null;
+           if (args.target.type === `project` && !project) throw Error(`Unknown projectId: ${args.target.projectId}`);
+           const direct = isUser && args.target.type === `cwd`;
+           if (direct && (typeof args.target.cwd !== `string` || !args.target.cwd.trim()))
